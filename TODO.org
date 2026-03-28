@@ -1,0 +1,375 @@
+#+OPTIONS: toc:nil
+* RQ1: *Is entity-centric fact suggestion a distinct and practically meaningful KG enrichment task beyond conventional relation-conditioned link prediction?*
+
+Goal: These baselines are *not meant to be strong final methods*, but to test whether *conventional relation-conditioned KGC can naturally solve entity-centric fact suggestion*.
+The key question is: If we start only from an anchor entity $h$, can we adapt standard KGC procedures in a natural way to produce useful fact suggestions $(r,t)$?
+
+  We propose three adapted baselines:
+
+  + Relation-first adaptation
++ Tail-first adaptation
++ Independent combination baseline
+
+These baselines should be evaluated using:
+
++ candidate set size
++ candidate coverage
++ Entity Hit@K
++ Entity Recall@K
++ Budget-to-First-Hit
++ optionally runtime or approximate inference cost
+
+** Relation-First Adaptation
+*** Idea
+This baseline converts the entity-centric task into a set of standard *relation-conditioned tail prediction* problems.
+Instead of directly predicting $(r,t)$ from $h$, it does:
+
+1. predict which relations are plausible for $h$
+2. for each selected relation (r), solve a standard KGC query $(h,r,?)$
+3. merge the resulting ((r,t)) candidates into one ranked fact list
+
+This is the most natural way to adapt classical KGC to the new setting.
+
+*** Step1: Build a relation ranking for each anchor entity $h$
+For each test entity $h$, obtain a ranked list of candidate relations (R$h$).
+There are two possible implementations:
+
+**** Option A: Frequency-based relation prior,  using a simple relation prior based on:
+***** relation frequency for similar entities,
+***** entity type,
+***** or outgoing relation statistics from training data.
+***** Example:
+for each entity type or neighborhood pattern, rank relations by frequency,  return top-(k_r) relations
+This is simpler and easier to implement.
+
+**** Option B: Learned relation predictor
+Train a relation prediction model: $P(r \mid h)$, using the representation of the anchor entity $h$.
+Implementation idea:
+
++ input: anchor entity representation $z_h$
++ output: score for each relation $r \in \mathcal{R}$
++ training target: all gold outgoing relations of $h$ in the training graph
+This version is stronger and preferable if feasible.
+
+
+*** Step 2: Select $top-k_r$ candidate relations
+For each anchor entity $h$, keep the $top-k_r$ relations: $R_{k_r}(h)$.
+Suggested values to test: $k_r = 5, 10, 20$
+
+*** Step 3: For each selected relation, run standard tail prediction
+For each $(r \in R_{k_r})(h)$, construct a conventional KGC query: $(h, r, ?)$
+
+Then use a standard tail prediction module to score candidate tails: $P(t \mid h, r)$
+
+This can be done with:
++ an existing KGC scoring function,
++ a path-based tail predictor,
++ or any relation-conditioned tail ranking model already available from the thesis code.
+
+*** Step 4: Keep top-(k_t) tails per relation
+For each selected relation (r), keep the top-(k_t) tail entities:  $T_{k_t}(h,r)$
+Suggested values: $k_t = 10, 20, 50$
+
+*** Step 5: Construct fact candidates
+Build fact candidates: $(h,r,t), \quad r \in R_{k_r}(h),  t \in T_{k_t}(h,r)$
+
+*** Step 6: Merge candidates into one ranked list
+Assign a joint score to each candidate fact.
+Recommended scoring: $s(h,r,t) = P(r\mid h) \cdot P(t \mid h,r)$
+
+If probabilities are not calibrated, use: $s(h,r,t) = \alpha , s_r(h,r) + (1-\alpha), s_t(h,r,t)$
+with $\alpha \in \{0.3, 0.5, 0.7\}$ tested on validation.
+Then sort all $(h,r,t)$ candidates by this score.
+
+*** What this baseline tests
+This baseline tests whether *classical KGC can be adapted naturally by first selecting relations and then applying standard tail completion*.
+
+If this baseline performs well with small candidate sets, then the new setting may not require a distinct formulation.
+If it performs poorly or needs very large candidate sets, that supports the claim that entity-centric fact suggestion is not naturally solved by conventional KGC.
+
+** Tail-First Adaptation
+*** Idea
+This is the symmetric alternative to the relation-first baseline.
+
+Instead of first predicting relation types, this baseline:
+
+1. predicts likely tail entities for anchor $h$
+2. for each selected tail $t$, predicts plausible relations
+3. merges the resulting $(r,t)$ candidates
+
+This tests whether the entity-centric setting can be solved by first finding “who/what is related” and only then deciding “how”.
+
+*** Step 1: Build a tail ranking for each anchor entity $h$
+For each anchor entity $h$, predict likely tail entities: $P(t \mid h)$
+
+This can be implemented using:
++ anchor-to-entity similarity,
++ a tail predictor independent of relation,
++ nearest neighbors in embedding space,
++ or any entity-level candidate generator from the thesis.
+
+*** Step 2: Select $top-k_t$ candidate tails
+Keep the $top-k_t$ tails: $T_{k_t}(h)$
+Suggested values: $k_t = 20, 50, 100$
+
+*** Step 3: For each tail, predict plausible relations
+For each selected tail $t$, score candidate relations: $P(r \mid h,t)$
+
+This can be done in two ways:
+
+**** Option A: Lightweight relation scorer
+Given pair $(h,t)$, score all relations using a standard triple scoring function.
+
+**** Option B: Relation classifier over $(h,t)$
+Train a classifier that predicts which relation(s) may connect $h$ and $t$.
+
+*** Step 4: Keep $top-(k_r)$ relations per tail
+For each $t$, keep: $R_{k_r}(h,t)$
+Suggested values: $k_r = 5, 10$
+
+*** Step 5: Construct fact candidates
+Build: $(h,r,t), \quad t \in T_{k_t}$h$, ; r \in R_{k_r}(h,t)$
+
+*** Step 6: Merge candidates into one ranked list
+Assign a joint score: $s(h,r,t) = P(t \mid h) \cdot P(r \mid h,t)$
+
+or weighted score fusion if needed.
+
+Sort all resulting candidates.
+
+*** What this baseline tests
+This baseline checks whether it is better to first identify *candidate entities* and only then infer the semantic relation.
+
+It is useful because it contrasts with the relation-first pipeline and reveals whether the new task is more naturally decomposed by semantic type first or by target entity first.
+
+** Independent Combination Baseline
+This baseline is the simplest and most important one.
+
+It assumes that:
++ relation prediction and tail prediction can be done *independently*
++ final fact candidates can then be formed by combining top relations and top tails
+
+Formally: $P(r,t \mid h) \approx P(r \mid h), P(t \mid h)$
+
+This is a very natural baseline and directly tests whether your structured method is doing more than just combining two independently predicted lists.
+
+*** Step 1: Predict relation scores for each anchor entity
+Train or compute: $P(r \mid h)$
+This can reuse the same relation prediction module used in the relation-first baseline.
+
+*** Step 2: Predict tail scores for each anchor entity
+Train or compute: $P(t \mid h)$
+This can reuse the same tail ranking module used in the tail-first baseline.
+
+*** Step 3: Select $top-k_r$ relations and $top-k_t$ tails
+For each anchor entity $h$, keep: $R_{k_r}(h)$
+and $T_{k_t}(h)$
+Suggested values:
++ $k_r = 5, 10, 20$
++ $k_t = 20, 50, 100$
+
+*** Step 4: Form all pairwise combinations
+Construct the candidate set: $\mathcal{C}(h) = R_{k_r}(h) \times T_{k_t}(h)$
+This is a restricted Cartesian product.
+
+*** Step 5: Score each candidate fact
+Use one of the following simple fusion rules:
+**** Multiplicative (*)
+$s(h,r,t)=P(r\mid h)\cdot P(t\mid h)$
+**** Additive
+$s(h,r,t)=\alpha s_r(h,r) + (1-\alpha)s_t(h,t)$
+
+**** Log-additive
+$s(h,r,t)=\log P(r\mid h)+\log P(t\mid h)$
+
+*** Step 6: Rank candidates
+Sort all candidates $(h,r,t)$ by the combined score.
+
+*** What this baseline tests
+This is the cleanest test of whether your method is doing something beyond **independent factorization**.
+
+If this baseline already performs very well, then the need for explicit structured candidate construction is weaker.
+If it performs noticeably worse, that supports the need for a more structured inference framework.
+
+**  Evaluation for all three baselines
+For each baseline, report the following:
+*** Candidate-generation metrics
+*** Average candidate set size
+*** candidate coverage
+*** coverage at fixed candidate budgets
+*** Entity-level utility metrics
+*** Entity Hit@K
+*** Entity Recall@K
+*** Budget-to-First-Hit
+*** optionally Budget-to-2-Hits
+*** MRR
+*** Hits@1 / Hits@10
+*** Recall@K
+*** approximate compute cost
+
+** Table A: Adapted baseline comparison for RQ1
+*** Columns:
++ Method
++ Candidate size
++ Candidate coverage
++ Entity Hit@10
++ Entity Recall@10
++ Budget-to-First-Hit
+
+*** Rows:
++ Relation-first
++ Tail-first
++ Independent combination
++ maybe frequency/type prior
++ your structured method (for reference)
+
+** Figures
++ Coverage vs Candidate Size for the three baselines
++ Entity Recall@K vs Candidate Budget
+
+** Implementation priority
++ *Independent combination baseline*
++ *Relation-first adaptation*
+   strongest natural adaptation of classical KGC
++ *Tail-first adaptation*
+   useful contrast, but less essential than the first two
+
+** Summary
+  We should implement three adapted baselines for RQ1.
+  The *relation-first baseline* first predicts candidate relations for an anchor entity, then turns each selected relation into a standard KGC query $(h,r,?)$ and predicts tails.
+  The *tail-first baseline* first predicts candidate tail entities, then predicts plausible relations for each selected tail.
+  The *independent combination baseline* predicts relations and tails independently from the anchor entity and combines them through simple score fusion.
+  These baselines should be evaluated mainly using candidate size, candidate coverage, entity-level utility metrics, and end-to-end fact quality, in order to test whether conventional KGC can naturally solve entity-centric fact suggestion.
+
+* RQ2: What inference strategy is required to solve entity-centric fact suggestion effectively under large relation–entity search spaces?candidate efficiency, candidate coverage, and final fact quality?
+** Search-Space and Inference Strategy Comparison
+Reuse from the master thesis
+Likely reusable
+candidate generation results
+candidate coverage results
+final tuple/fact prediction results
+existing outputs for relation scoring and tail scoring
+May require new work
+explicit implementation of the adapted baselines as named strategies
+reorganizing the results around “inference strategy comparison” rather than thesis-style research questions
+
+** Efficiency–Coverage–Quality Trade-off
+** Fixed-Budget Evaluation
+Compare methods fairly under the same candidate budget.
+This is important because otherwise a reviewer may argue that one method performs better only because it uses more candidates.
+*** Experimental design
+Choose a small number of fixed candidate budgets, for example: 50, 100, 200, 500
+For each strategy and each budget, report:
++ Candidate Coverage
++ MRR
++ Hits@10
++ Entity Hit@10
++ Entity Recall@10
+
+
+* RQ3: To what extent do entity-level utility measures complement conventional tuple-level metrics when evaluating entity-centric fact suggestion?
+** Example
+Consider an anchor entity $h$ with three gold facts: $\mathcal{G}(h)=\{(r_1,t_1),(r_2,t_2),(r_3,t_3)\}$
+
+Suppose the system returns the following top-5 fact suggestions for $h$:
+$\mathrm{Top}5(h)=\big[(r_1,t_1),(r_9,t_9),(r_8,t_8),(r_2,t_2),(r_7,t_7)\big]$
+
+Here, $(r_1,t_1)$ and $(r_2,t_2)$ are correct suggestions, while the others are incorrect.
+
+From a \emph{tuple-level} perspective, the first gold fact is ranked at position $1$, the second gold fact is ranked at position $4$, and the third gold fact does not appear in the top-5 list. Consequently, standard tuple-level metrics such as MRR and Hits@$K$ may still indicate reasonably good ranking quality.
+
+From an \emph{entity-level} perspective, however, the same output is evaluated as a suggestion list for the anchor entity $h$. In this case:
+$\mathrm{EntityHit@5}(h)=1$
+because at least one correct fact appears in the top-5 suggestions,
+
+$\mathrm{EntityRecall@5}(h)=\frac{2}{3}$
+because two out of the three gold facts associated with $h$ are covered within the top-5 suggestions, and
+
+$\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}(h)=1$
+because the first correct fact appears at rank $1$.
+
+*** Why this matter
+This example highlights the core difference between conventional relation-conditioned link prediction and our entity-centric fact suggestion setting. In conventional link prediction, evaluation focuses on whether a specific missing triple element is ranked highly once the relation is already known. In our setting, however, the system starts only from an anchor entity and must return a short list of plausible complete fact suggestions.
+
+For a user inspecting an entity page, the practical question is not only whether one correct triple can be ranked highly in isolation, but whether the returned suggestion list contains useful facts early enough to support curation or enrichment. This is why entity-level measures such as $\mathrm{EntityHit@K}$, $\mathrm{EntityRecall@K}$, and $\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}$ are important: they capture whether the system is useful as an entity-centric fact suggestion tool, rather than only as a conventional triple-ranking model.
+
+** Tuple-level metrics
+Tuple-level metrics evaluate how highly individual correct facts are ranked in the returned candidate list. Let $q$ denote a query instance and let $\mathcal{G}(q)$ denote its set of gold fact candidates. For a gold fact $(h,r,t) \in \mathcal{G}(q)$, let $\mathrm{rank}(h,r,t)$ denote its rank in the predicted candidate list.
+
+We report the following standard tuple-level metrics:
+
+\begin{equation}
+\mathrm{MRR} = \frac{1}{N} \sum_{i=1}^{N} \frac{1}{\mathrm{rank}_i},
+\end{equation}
+
+
+where $N$ is the number of evaluated gold facts and $\mathrm{rank}_i$ is the rank of the $i$-th gold fact.
+
+\begin{equation}
+\mathrm{Hits@K} = \frac{1}{N} \sum_{i=1}^{N} \mathbf{1}(\mathrm{rank}_i \leq K),
+\end{equation}
+
+where $\mathbf{1}(\cdot)$ is the indicator function.
+
+These metrics are standard in knowledge graph completion and quantify how highly individual correct facts are ranked.
+
+** Entity-level metrics
+In entity-centric fact suggestion, the practical unit of interaction is often not a single fact, but an anchor entity together with a ranked suggestion list. We therefore complement tuple-level evaluation with entity-level utility metrics.
+
+For an anchor entity $h$, let $\mathrm{TopK}(h)$ denote the top-$K$ predicted fact suggestions associated with $h$, and let
+
+\begin{equation}
+\mathcal{G}(h) = \{(r,t) \mid (h,r,t) \text{ is a gold fact}\}
+\end{equation}
+
+denote the set of gold facts associated with $h$.
+
+We define the following entity-level metrics:
+
+\begin{equation}
+\mathrm{EntityHit@K}(h) =
+\begin{cases}
+1, & \text{if } \mathrm{TopK}(h) \cap \mathcal{G}(h) \neq \emptyset, \\
+0, & \text{otherwise,}
+\end{cases}
+\end{equation}
+
+and average this quantity over all evaluated anchor entities.
+
+\begin{equation}
+\mathrm{EntityRecall@K}(h) =
+\frac{|\mathrm{TopK}(h) \cap \mathcal{G}(h)|}{|\mathcal{G}(h)|},
+\end{equation}
+
+which measures how many of the gold facts associated with entity $h$ are covered within the top-$K$ suggestions. Again, we report the average over all anchor entities.
+
+Finally, we define the budget required to retrieve the first correct fact suggestion for an entity as
+
+\begin{equation}
+\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}(h)
+=
+\min \{k \mid \mathrm{Top}k(h) \cap \mathcal{G}(h) \neq \emptyset \},
+\end{equation}
+
+whenever such a $k$ exists. We report the average budget-to-first-hit over all entities for which at least one correct fact is retrieved.
+
+** Interpretation
+Tuple-level metrics evaluate the ranking quality of individual correct facts, while entity-level metrics evaluate whether the returned suggestion list is useful for a given anchor entity. The latter is particularly relevant for enrichment-oriented workflows such as entity-page completion and human-in-the-loop knowledge graph curation, where a user typically inspects only a small number of suggestions for a given entity.
+
+* Ablation and Analysis
+These experiments are still important, but they should no longer be presented as the main research question. They should support the interpretation of RQ2.
+
++ No relation discovery
++ No special join / simple score fusion only
++ No final reranker
++ Relation-only ($P(r \mid h)$) vs Tail-only ($P(t \mid h)$)
++  Sparse vs Dense entity analysis
++ Candidate budget sensitivity
++ Error analysis
+* Real World Applications
++ [[https://www.wikidata.org/wiki/Wikidata%3ARecoin][Wikidata Recoin]]
++ [[https://github.com/Wikidata-lib/PropertySuggester][Wikidata’s property suggester]]
++ [[https://www.linkedin.com/blog/engineering/knowledge/completing-a-member-knowledge-graph-with-graph-neural-networks][LinkedIn member KG completion]]
+  - given a user/member profile,
+  - infer missing information or likely structured links,
+  - use the graph to enrich sparse profiles
