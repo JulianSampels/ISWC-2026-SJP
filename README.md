@@ -5,6 +5,23 @@
 
 ---
 
+## Clone (with submodules)
+
+```bash
+git clone --recurse-submodules https://github.com/JulianSampels/ISWC-2026-SJP.git
+cd ISWC-2026-SJP
+```
+
+If you already cloned the repository without submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+This fetches both code submodules under `code/RETA_code` and `code/SJP_code`.
+
+---
+
 ## Motivation
 
 Standard KGC assumes the query relation is known (h, r, ?). In practice — Wikidata curation,
@@ -89,26 +106,37 @@ the **Research Track** on the following grounds:
 
 ---
 
-## Repository Layout (this folder)
+## Repository Layout
 
-```
-iswc/
-├── README.md                      ← This file
-├── contributions.md               ← Ranked contributions for the paper
-├── baselines/
-│   ├── reta/
-│   │   ├── reta_filter.py         ← RETA-Filter reproduction (schema-aware)
-│   │   └── reta_grader.py         ← RETA-Grader reproduction (CNN embedding)
-│   ├── mvf/
-│   │   ├── mvf_graphs.py          ← Head-rel & tail-rel graph construction
-│   │   ├── mvf_model.py           ← Attention-GNN + inter-view alignment
-│   │   └── mvf_filter.py          ← Full MVF/GFRT pipeline
-│   └── adapted/
-│       ├── relation_first.py      ← Relation-first adaptation (RQ1)
-│       ├── tail_first.py          ← Tail-first adaptation (RQ1)
-│       └── independent.py         ← Independent combination (RQ1)
-└── evaluation/
-    └── entity_metrics.py          ← EntityHit@K, EntityRecall@K, B2FH
+```text
+ISWC-2026-SJP/
+├── README.md
+├── comparison.md
+├── contributions.md
+├── TODO.org
+└── code/
+   ├── iswc/
+   │   ├── baselines/
+   │   │   ├── adapted/
+   │   │   │   ├── relation_first.py
+   │   │   │   └── independent.py
+   │   │   ├── gfrt/
+   │   │   │   ├── gfrt_filter.py
+   │   │   │   ├── gfrt_graphs.py
+   │   │   │   └── gfrt_model.py
+   │   │   └── README.md
+   │   └── evaluation/
+   │       └── entity_metrics.py
+   ├── RETA_code/               # git submodule (original RETA/RETA++)
+   │   ├── main.py
+   │   ├── main_reta_plus.py
+   │   └── README.md
+   └── SJP_code/                # git submodule (Split-Join-Predict code)
+      ├── generate_dataset.py
+      ├── PathE/pathe/
+      ├── data/path_datasets/
+      ├── figures/code/
+      └── README.md
 ```
 
 ---

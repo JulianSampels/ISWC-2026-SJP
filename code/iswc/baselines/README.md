@@ -6,17 +6,16 @@ This folder contains reproductions and adapted baselines for comparison in the I
 
 ```
 baselines/
-├── reta/                   RETA (Rosso et al., WWW'21)
-│   ├── reta_filter.py      Schema-aware candidate filter
-│   └── reta_grader.py      CNN-based triple scorer/ranker
-├── mvf/                    MVF/GFRT (Li, Zhang, Yu — BDR'23)
-│   ├── mvf_graphs.py       Head-rel and tail-rel graph construction
-│   ├── mvf_model.py        Attention-GNN + inter-view alignment
-│   └── mvf_filter.py       Full filter + scoring pipeline
-└── adapted/                RQ1 adapted baselines
-    ├── relation_first.py   Relation-First adaptation
-    ├── independent.py      Independent Combination + Tail-First
-    └── (see contributions.md for design rationale)
+├── adapted/                RQ1 adapted baselines
+│   ├── __init__.py
+│   ├── relation_first.py   Relation-First adaptation
+│   └── independent.py      Independent Combination + Tail-First
+├── gfrt/                   GFRT baseline (Li, Zhang, Yu — BDR'23)
+│   ├── __init__.py
+│   ├── gfrt_filter.py      Candidate generation + training wrappers
+│   ├── gfrt_graphs.py      Head-rel and tail-rel graph construction
+│   └── gfrt_model.py       Attention-GNN architecture
+└── README.md
 ```
 
 ## Running the baselines
@@ -24,21 +23,10 @@ baselines/
 All baselines accept a training triple tensor of shape `(N, 3)` with integer entity/relation ids,
 matching the format output by `PathE/pathe/kgloader.py`.
 
-### RETA (no-type variant)
+### RETA / RETA++
 
-```python
-from iswc.baselines.reta import build_reta_filter, evaluate_filter_coverage
-
-# Build filter
-reta = build_reta_filter(train_triples, alpha=0.0, beta=1)
-
-# Generate candidates for test entities
-candidates = reta.generate_candidates_batch(test_head_ids, max_candidates=500)
-
-# Evaluate coverage
-metrics = evaluate_filter_coverage(candidates, test_triples)
-print(f"Coverage: {metrics['coverage']:.4f}, Avg size: {metrics['avg_size']:.1f}")
-```
+The original RETA implementation is available as a separate submodule in `code/RETA_code/`.
+Use that folder's README for end-to-end RETA and RETA++ training/evaluation commands.
 
 ### GFRT
 
