@@ -125,6 +125,10 @@ ISWC-2026-SJP/
    │   │   │   ├── gfrt_graphs.py
    │   │   │   └── gfrt_model.py
    │   │   └── README.md
+   │   ├── harmonized/
+   │   │   ├── interface.py
+   │   │   ├── adapters.py
+   │   │   └── README.md
    │   └── evaluation/
    │       └── entity_metrics.py
    ├── RETA_code/               # git submodule (original RETA/RETA++)
