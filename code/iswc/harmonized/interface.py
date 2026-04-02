@@ -1,13 +1,13 @@
 """
 Harmonized interface for SJP and RETA dataset/candidate/ranking workflows.
 
-This module provides six building blocks:
-1) Canonicalize internet-style datasets into one standard split format.
-2) Convert standard datasets into SJP- and RETA-specific input layouts.
+This module provides a cleaned harmonized workflow:
+1) Generate standardized datasets from KgLoader dataset names.
+2) Convert standardized datasets into SJP- and RETA-specific input layouts.
 3) Build RETA dictionaries_and_facts.bin without modifying RETA_code.
-4) Load/save ranked candidate files from both pipelines in one schema.
-5) Generate/standardize candidate sets and final rankings.
-6) Evaluate/compare candidates with shared entity-centric metrics.
+4) Load/save standardized candidate and ranked CSV files.
+5) Generate candidates (SJP phase 1+2, RETA-Filter).
+6) Rank candidates (SJP phase 3, RETA-Grader).
 
 Run as a CLI:
     python -m iswc.harmonized.interface --help
@@ -44,8 +44,6 @@ if str(_CODE_DIR) not in sys.path:
 
 from iswc.evaluation import MetricResults, evaluate_entity_centric, format_results_table  # noqa: E402
 from iswc.harmonized.dataset import (  # noqa: E402
-    canonicalize_downloaded_dataset,
-    export_standardized_dataset_to_sjp,
     generate_standardized_dataset_from_kgloader,
     load_standardized_dataset_triples,
     resolve_standardized_dataset,
@@ -53,11 +51,6 @@ from iswc.harmonized.dataset import (  # noqa: E402
 
 
 SJP_SPLITS = ("train", "val", "test")
-RETA_SPLIT_NAME = {
-    "train": "train",
-    "val": "valid",
-    "test": "test",
-}
 
 
 def _split_dir(path_dataset_dir: Path, split: str) -> Path:
@@ -254,97 +247,6 @@ def build_reta_dictionaries(
     return output_path
 
 
-def export_sjp_dataset_to_reta(
-    path_dataset_dir: str | Path,
-    output_dir: str | Path,
-    default_entity_type: str = "Thing",
-    build_reta_bin: bool = True,
-) -> Dict[str, Any]:
-    """
-    Export a generated SJP path dataset into RETA-compatible input files.
-
-    Args:
-        path_dataset_dir: SJP dataset root containing train/val/test with
-            triples.pt, id2entity.json and id2relation.json.
-        output_dir: Target directory for RETA-style files.
-        default_entity_type: Type assigned to all entities when type annotations
-            are unavailable.
-        build_reta_bin: If True, also build dictionaries_and_facts.bin.
-
-    Returns:
-        A summary dictionary with generated file paths and counts.
-    """
-    dataset_root = Path(path_dataset_dir).resolve()
-    reta_output = Path(output_dir).resolve()
-    reta_output.mkdir(parents=True, exist_ok=True)
-
-    entity_label_to_id, relation_label_to_id = _load_sjp_canonical_maps(dataset_root)
-    id_to_entity = {idx: label for label, idx in entity_label_to_id.items()}
-    id_to_relation = {idx: label for label, idx in relation_label_to_id.items()}
-
-    all_relation_labels_for_type_file: List[str] = []
-
-    for split in SJP_SPLITS:
-        split_path = _split_dir(dataset_root, split)
-        triples = torch.load(split_path / "triples.pt", map_location="cpu")
-        if triples.dim() != 2 or triples.size(1) != 3:
-            raise ValueError(f"Expected [N,3] triples in {split_path / 'triples.pt'}.")
-
-        reta_split = RETA_SPLIT_NAME[split]
-        nary_path = reta_output / f"n-ary_{reta_split}.json"
-        txt_path = reta_output / f"{reta_split}.txt"
-
-        with nary_path.open("w", encoding="utf-8") as nary_file, txt_path.open("w", encoding="utf-8") as txt_file:
-            for row in triples.tolist():
-                h_id, r_id, t_id = map(int, row)
-                h_label = id_to_entity[h_id]
-                r_label = id_to_relation[r_id]
-                t_label = id_to_entity[t_id]
-
-                # Keep relation first: RETA parsing assumes first key is relation.
-                fact = {r_label: [h_label, t_label], "N": 2}
-                nary_file.write(json.dumps(fact, ensure_ascii=True) + "\n")
-                txt_file.write(f"{h_label}\t{t_label}\t{r_label}\n")
-
-                all_relation_labels_for_type_file.append(r_label)
-
-    # Minimal type files so RETA filter path can run even without curated types.
-    entity_type_file = reta_output / "entity2types_ttv.txt"
-    with entity_type_file.open("w", encoding="utf-8") as handle:
-        for label in sorted(entity_label_to_id.keys(), key=lambda x: entity_label_to_id[x]):
-            handle.write(f"{label}\t{default_entity_type}\n")
-
-    type_relation_file = reta_output / "type2relation2type_ttv.txt"
-    with type_relation_file.open("w", encoding="utf-8") as handle:
-        for relation_label in all_relation_labels_for_type_file:
-            handle.write(f"{default_entity_type}\t{relation_label}\t{default_entity_type}\n")
-
-    dictionary_path: Optional[Path] = None
-    if build_reta_bin:
-        dictionary_path = build_reta_dictionaries(
-            reta_data_dir=reta_output,
-            values_indexes=entity_label_to_id,
-            roles_indexes=relation_label_to_id,
-        )
-
-    summary = {
-        "path_dataset_dir": str(dataset_root),
-        "reta_output_dir": str(reta_output),
-        "num_entities": len(entity_label_to_id),
-        "num_relations": len(relation_label_to_id),
-        "default_entity_type": default_entity_type,
-        "built_reta_dictionary": bool(build_reta_bin),
-        "dictionary_path": str(dictionary_path) if dictionary_path is not None else None,
-    }
-
-    metadata_path = reta_output / "harmonized_export_metadata.json"
-    with metadata_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-
-    logger.info("Exported SJP dataset at %s to RETA-compatible directory %s", dataset_root, reta_output)
-    return summary
-
-
 def _build_label_to_id_from_standard(
     triples_by_split: Dict[str, List[Tuple[str, str, str]]],
 ) -> Tuple[Dict[str, int], Dict[str, int]]:
@@ -507,10 +409,10 @@ def _group_from_triples_and_scores(
 
     score_list: Optional[List[float]] = None
     if scores is not None:
-        scores = scores.detach().cpu().reshape(-1)
-        if scores.numel() != triples.size(0):
+        flat_scores = scores.detach().cpu().reshape(-1)
+        if flat_scores.numel() != triples.size(0):
             raise ValueError("Scores tensor length must match number of triples.")
-        score_list = scores.tolist()
+        score_list = flat_scores.tolist()
 
     for idx, triple in enumerate(triples.tolist()):
         h_id, r_id, t_id = map(int, triple)
@@ -519,7 +421,10 @@ def _group_from_triples_and_scores(
 
     if score_list is not None:
         for head_id in list(grouped.keys()):
-            grouped[head_id].sort(key=lambda x: x[2], reverse=True)
+            grouped[head_id].sort(
+                key=lambda x: float(x[2]) if x[2] is not None else float("-inf"),
+                reverse=True,
+            )
             grouped[head_id] = _dedupe_ranked_pairs(grouped[head_id])
     else:
         for head_id in list(grouped.keys()):
@@ -530,8 +435,12 @@ def _group_from_triples_and_scores(
 
 def _normalise_prediction_entry(entry: Any, head_id: int) -> Tuple[int, int, Optional[float]]:
     if isinstance(entry, dict):
-        relation_id = int(entry.get("relation_id", entry.get("r", entry.get("relation"))))
-        tail_id = int(entry.get("tail_id", entry.get("t", entry.get("tail"))))
+        relation_raw = entry.get("relation_id", entry.get("r", entry.get("relation")))
+        tail_raw = entry.get("tail_id", entry.get("t", entry.get("tail")))
+        if relation_raw is None or tail_raw is None:
+            raise ValueError(f"Prediction entry for head {head_id} is missing relation/tail fields: {entry}")
+        relation_id = int(relation_raw)
+        tail_id = int(tail_raw)
         score_raw = entry.get("score")
         score = float(score_raw) if score_raw is not None else None
         return relation_id, tail_id, score
@@ -578,7 +487,10 @@ def _load_predictions_from_csv(candidate_path: Path) -> Dict[int, List[Tuple[int
         if has_rank:
             items.sort(key=lambda x: x[3] if x[3] is not None else 10**18)
         elif has_score:
-            items.sort(key=lambda x: x[2], reverse=True)
+            items.sort(
+                key=lambda x: float(x[2]) if x[2] is not None else float("-inf"),
+                reverse=True,
+            )
 
         predictions[head_id] = _dedupe_ranked_pairs((r, t, s) for r, t, s, _ in items)
 
@@ -745,85 +657,18 @@ def _import_reta_main_module(reta_code_dir: str | Path):
     return importlib.import_module("main_reta_plus")
 
 
-def _build_reta_to_sjp_id_maps(
-    reta_data_dir: str | Path,
-    sjp_dataset_dir: str | Path,
-) -> Tuple[Dict[int, int], Dict[int, int]]:
-    reta_data_path = Path(reta_data_dir).resolve()
-    with (reta_data_path / "dictionaries_and_facts.bin").open("rb") as handle:
-        data_info = pickle.load(handle)
-
-    reta_entity_label_to_id: Dict[str, int] = data_info["values_indexes"]
-    reta_relation_label_to_id: Dict[str, int] = data_info["roles_indexes"]
-
-    sjp_entity_label_to_id, sjp_relation_label_to_id = _load_sjp_canonical_maps(Path(sjp_dataset_dir).resolve())
-
-    entity_id_map: Dict[int, int] = {}
-    for label, reta_id in reta_entity_label_to_id.items():
-        if label not in sjp_entity_label_to_id:
-            raise KeyError(f"Entity label '{label}' in RETA mapping is missing from SJP mapping.")
-        entity_id_map[int(reta_id)] = int(sjp_entity_label_to_id[label])
-
-    relation_id_map: Dict[int, int] = {}
-    for label, reta_id in reta_relation_label_to_id.items():
-        if label not in sjp_relation_label_to_id:
-            raise KeyError(f"Relation label '{label}' in RETA mapping is missing from SJP mapping.")
-        relation_id_map[int(reta_id)] = int(sjp_relation_label_to_id[label])
-
-    return entity_id_map, relation_id_map
-
-
-def _map_predictions_with_id_maps(
-    predictions: Dict[int, List[Tuple[int, int, Optional[float]]]],
-    entity_id_map: Dict[int, int],
-    relation_id_map: Dict[int, int],
-) -> Dict[int, List[Tuple[int, int, Optional[float]]]]:
-    mapped: Dict[int, List[Tuple[int, int, Optional[float]]]] = {}
-    for head_id, ranked in predictions.items():
-        new_head = entity_id_map.get(int(head_id))
-        if new_head is None:
-            continue
-        mapped_ranked: List[Tuple[int, int, Optional[float]]] = []
-        for relation_id, tail_id, score in ranked:
-            new_relation = relation_id_map.get(int(relation_id))
-            new_tail = entity_id_map.get(int(tail_id))
-            if new_relation is None or new_tail is None:
-                continue
-            mapped_ranked.append((new_relation, new_tail, score))
-        mapped[new_head] = mapped_ranked
-    return mapped
-
-
-def extract_reta_candidates(
+def _prepare_reta_runtime(
     reta_code_dir: str | Path,
     reta_data_dir: str | Path,
-    model_path: str | Path,
-    output_file: str | Path,
-    entities_evaluated: str = "both",
-    top_nfilters: int = -10,
-    at_least: int = 2,
-    sparsifier: int = 2,
-    build_type_dictionaries: str = "True",
-    device: str = "cuda:0",
-    max_facts: Optional[int] = None,
-    map_to_sjp_dataset_dir: Optional[str | Path] = None,
-    candidate_budget: Optional[int] = None,
-) -> Dict[int, List[Tuple[int, int, Optional[float]]]]:
-    """
-    Extract RETA scored candidate rankings from a trained RETA/RETA++ model.
-
-    Notes:
-      - RETA's model forward path calls tensor.cuda(device), so CUDA is required.
-      - RETA_code is imported as-is; this function does not modify RETA files.
-    """
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "RETA extraction requires CUDA because RETA forward() uses tensor.cuda(device)."
-        )
-
+    entities_evaluated: str,
+    top_nfilters: int,
+    at_least: int,
+    sparsifier: int,
+    build_type_dictionaries: str,
+    device: str,
+) -> Dict[str, Any]:
     reta = _import_reta_main_module(reta_code_dir)
     reta_data_path = Path(reta_data_dir).resolve()
-    model_path = Path(model_path).resolve()
 
     with (reta_data_path / "dictionaries_and_facts.bin").open("rb") as handle:
         data_info = pickle.load(handle)
@@ -889,105 +734,192 @@ def extract_reta_candidates(
         id2type,
     )
 
-    model = torch.load(model_path, map_location=device)
-    model.eval()
-    model.to(device)
+    flat_test_facts: List[Any] = []
+    head_to_template_fact: Dict[int, List[int]] = {}
+    for grouped in test:
+        for fact in grouped:
+            cast_fact = list(fact)
+            flat_test_facts.append(cast_fact)
+            head_id = int(cast_fact[1])
+            if head_id not in head_to_template_fact:
+                head_to_template_fact[head_id] = cast_fact
+
+    return {
+        "reta": reta,
+        "reta_data_path": reta_data_path,
+        "relation2id": relation2id,
+        "entity2id": entity2id,
+        "id2entity": id2entity,
+        "id2relation": id2relation,
+        "type2id": type2id,
+        "id2type": id2type,
+        "unk_type_id": unk_type_id,
+        "entity_name_to_types": entity_name_to_types,
+        "entity_id_to_types": entity_id_to_types,
+        "head2relation2tails": head2relation2tails,
+        "type_id_to_frequency": type_id_to_frequency,
+        "type2relation_type_frequency": type2relation_type_frequency,
+        "type_head_tail_entity_matrix": type_head_tail_entity_matrix,
+        "tail_type_relation_head_type_tensor": tail_type_relation_head_type_tensor,
+        "entity2sparsified_types": entity2sparsified_types,
+        "flat_test_facts": flat_test_facts,
+        "head_to_template_fact": head_to_template_fact,
+        "at_least": int(at_least),
+        "sparsifier": int(sparsifier),
+        "entities_evaluated": entities_evaluated,
+    }
+
+
+def _build_reta_facts_from_candidate_pairs(
+    reta: Any,
+    fact: List[int],
+    candidate_pairs: List[Tuple[int, int]],
+    entity2sparsified_types: Dict[int, List[int]],
+    unk_type_id: int,
+) -> Tuple[List[np.ndarray], Dict[int, Tuple[int, int]]]:
+    if not candidate_pairs:
+        return [], {}
+
+    all_relations = [int(relation_id) for relation_id, _ in candidate_pairs]
+    all_tails = [int(tail_id) for _, tail_id in candidate_pairs]
+
+    tiled_fact = np.array(fact * len(candidate_pairs)).reshape(len(candidate_pairs), -1)
+    tiled_fact[:, 3] = all_tails
+    tiled_fact[:, 0] = all_relations
+    tiled_fact[:, 2] = all_relations
+
+    current_head_entity = int(tiled_fact[0][1])
+    head_sparsified_types = entity2sparsified_types.get(current_head_entity, [unk_type_id])
+
+    tmp_t_types = [list(entity2sparsified_types.get(entity_id, [])) for entity_id in list(tiled_fact[:, 3])]
+    for index, types in enumerate(tmp_t_types):
+        if not types:
+            tmp_t_types[index] = [unk_type_id]
+
+    tmp_t_types_0 = np.array([types[0] for types in tmp_t_types])
+
+    tmp_array = tiled_fact[:, :4]
+    for head_type in head_sparsified_types:
+        tmp_array = np.c_[tmp_array, np.full((tiled_fact.shape[0], 1), np.array(head_type)), tmp_t_types_0.T]
+    new_tiled_fact = list(tmp_array)
+
+    multi_type_indices = [index for index, types in enumerate(tmp_t_types) if len(types) > 1]
+    for index in multi_type_indices:
+        for tail_type in tmp_t_types[index][1:]:
+            for head_type in head_sparsified_types:
+                new_tiled_fact[index] = np.concatenate((new_tiled_fact[index], np.array([head_type, tail_type])))
+
+    grouped_facts, idx2relation_tail = reta.sort_testing_facts_according_to_arity_fast(new_tiled_fact, candidate_pairs)
+    return grouped_facts, idx2relation_tail
+
+
+def extract_reta_filter_candidates(
+    reta_code_dir: str | Path,
+    reta_data_dir: str | Path,
+    output_file: str | Path,
+    entities_evaluated: str = "both",
+    top_nfilters: int = -10,
+    at_least: int = 2,
+    sparsifier: int = 2,
+    build_type_dictionaries: str = "True",
+    device: str = "cuda:0",
+    max_facts: Optional[int] = None,
+    map_to_sjp_dataset_dir: Optional[str | Path] = None,
+    candidate_budget: Optional[int] = None,
+) -> Dict[int, List[Tuple[int, int, Optional[float]]]]:
+    runtime = _prepare_reta_runtime(
+        reta_code_dir=reta_code_dir,
+        reta_data_dir=reta_data_dir,
+        entities_evaluated=entities_evaluated,
+        top_nfilters=top_nfilters,
+        at_least=at_least,
+        sparsifier=sparsifier,
+        build_type_dictionaries=build_type_dictionaries,
+        device=device,
+    )
+
+    reta = runtime["reta"]
+    id2entity = runtime["id2entity"]
+    relation2id = runtime["relation2id"]
+    entity2id = runtime["entity2id"]
+    type2relation_type_frequency = runtime["type2relation_type_frequency"]
+    type_head_tail_entity_matrix = runtime["type_head_tail_entity_matrix"]
+    tail_type_relation_head_type_tensor = runtime["tail_type_relation_head_type_tensor"]
+    entity_name_to_types = runtime["entity_name_to_types"]
+    type2id = runtime["type2id"]
+    at_least = runtime["at_least"]
+    sparsifier = runtime["sparsifier"]
+    type_id_to_frequency = runtime["type_id_to_frequency"]
+    entity_id_to_types = runtime["entity_id_to_types"]
+    unk_type_id = runtime["unk_type_id"]
+    id2type = runtime["id2type"]
+    entity2sparsified_types = runtime["entity2sparsified_types"]
+    flat_test_facts = runtime["flat_test_facts"]
+    head2relation2tails = runtime["head2relation2tails"]
+    reta_data_path = runtime["reta_data_path"]
 
     predictions: Dict[int, List[Tuple[int, int, Optional[float]]]] = {}
-    visited_heads: set[str] = set()
-    rt_negative_candidates: List[Any] = []
-
+    visited_heads: set[int] = set()
     processed = 0
-    with torch.no_grad():
-        flat_test_facts: List[Any] = []
-        for grouped in test:
-            for fact in grouped:
-                flat_test_facts.append(fact)
 
-        for fact in flat_test_facts:
-            if max_facts is not None and processed >= max_facts:
-                break
-            processed += 1
+    for raw_fact in flat_test_facts:
+        if max_facts is not None and processed >= max_facts:
+            break
+        processed += 1
 
-            fact = list(fact)
-            arity = int(len(fact) / 2)
-            head_id = int(fact[1])
-            column = 3
+        fact = list(raw_fact)
+        head_id = int(fact[1])
+        if head_id in visited_heads:
+            continue
+        visited_heads.add(head_id)
 
-            if head_id not in head2relation2tails:
-                continue
-            if head_id not in id2entity:
-                continue
+        if head_id not in head2relation2tails:
+            continue
+        if head_id not in id2entity:
+            continue
 
-            head_name = id2entity[head_id]
-            if head_name in visited_heads:
-                continue
-            visited_heads.add(head_name)
+        head_name = id2entity[head_id]
+        ranked: List[Tuple[int, int, Optional[float]]] = []
 
-            score_lists: List[np.ndarray] = []
-            idx2relation_tail_in_scores: Dict[int, Tuple[int, int]] = {}
+        if head_name in entity_name_to_types:
+            filtered_facts, idx2relation_tail = reta.get_reta_filtered_results(
+                head_id,
+                id2entity,
+                type2relation_type_frequency,
+                top_nfilters,
+                3,
+                fact,
+                None,
+                int(len(fact) / 2),
+                device,
+                type_head_tail_entity_matrix,
+                tail_type_relation_head_type_tensor,
+                entity_name_to_types,
+                type2id,
+                relation2id,
+                at_least,
+                sparsifier,
+                type_id_to_frequency,
+                entity_id_to_types,
+                unk_type_id,
+                id2type,
+                entity2sparsified_types,
+                entities_evaluated,
+                [],
+            )
+            if filtered_facts and idx2relation_tail:
+                for index in sorted(idx2relation_tail.keys()):
+                    relation_id, tail_id = idx2relation_tail[index]
+                    ranked.append((int(relation_id), int(tail_id), None))
 
-            if head_name in entity_name_to_types:
-                new_tiled_fact, idx2relation_tail_in_scores = reta.get_reta_filtered_results(
-                    head_id,
-                    id2entity,
-                    type2relation_type_frequency,
-                    top_nfilters,
-                    column,
-                    fact,
-                    model,
-                    arity,
-                    device,
-                    type_head_tail_entity_matrix,
-                    tail_type_relation_head_type_tensor,
-                    entity_name_to_types,
-                    type2id,
-                    relation2id,
-                    at_least,
-                    sparsifier,
-                    type_id_to_frequency,
-                    entity_id_to_types,
-                    unk_type_id,
-                    id2type,
-                    entity2sparsified_types,
-                    entities_evaluated,
-                    rt_negative_candidates,
-                )
-                score_lists = reta.get_scores_from_reta_filtered_results(new_tiled_fact, model, device)
+        if not ranked and entities_evaluated == "none":
+            ranked = [
+                (int(relation_id), int(tail_id), None)
+                for relation_id in runtime["id2relation"].keys()
+                for tail_id in runtime["id2entity"].keys()
+            ]
 
-            if (
-                (head_name not in entity_name_to_types or not score_lists or len(score_lists[0]) < 10)
-                and entities_evaluated == "none"
-            ):
-                score_lists, idx2relation_tail_in_scores = reta.evaluate_all_relation_tail_pairs_v2(
-                    head_id,
-                    id2entity,
-                    relation2id,
-                    id2relation,
-                    column,
-                    fact,
-                    model,
-                    arity,
-                    device,
-                    sparsifier,
-                    type_id_to_frequency,
-                    entity_id_to_types,
-                    unk_type_id,
-                    type2id,
-                    id2type,
-                )
-
-            if not score_lists:
-                continue
-
-            scores = np.concatenate(score_lists).ravel()
-            sorted_indices = (-scores).argsort()
-
-            ranked: List[Tuple[int, int, Optional[float]]] = []
-            for idx in sorted_indices:
-                relation_id, tail_id = idx2relation_tail_in_scores[int(idx)]
-                ranked.append((int(relation_id), int(tail_id), float(scores[int(idx)])))
-
+        if ranked:
             predictions[head_id] = _dedupe_ranked_pairs(ranked)
 
     if map_to_sjp_dataset_dir is not None:
@@ -998,14 +930,151 @@ def extract_reta_candidates(
         predictions = _map_predictions_with_id_maps(predictions, entity_id_map, relation_id_map)
 
     predictions = apply_candidate_budget(predictions, candidate_budget)
-
-    output_path = Path(output_file).resolve()
-    if output_path.suffix.lower() not in {".pt", ".csv"}:
-        raise ValueError("output_file for RETA extraction must end with .pt or .csv")
-    save_ranked_predictions(predictions, output_path)
-
-    logger.info("Extracted RETA candidate rankings for %d heads", len(predictions))
+    save_ranked_predictions(predictions, output_file)
+    logger.info("Extracted RETA filter candidates for %d heads", len(predictions))
     return predictions
+
+
+def rank_reta_candidates(
+    reta_code_dir: str | Path,
+    reta_data_dir: str | Path,
+    candidate_file: str | Path,
+    model_path: str | Path,
+    output_file: str | Path,
+    entities_evaluated: str = "both",
+    top_nfilters: int = -10,
+    at_least: int = 2,
+    sparsifier: int = 2,
+    build_type_dictionaries: str = "True",
+    device: str = "cuda:0",
+    max_facts: Optional[int] = None,
+    map_to_sjp_dataset_dir: Optional[str | Path] = None,
+    candidate_budget: Optional[int] = None,
+) -> Dict[int, List[Tuple[int, int, Optional[float]]]]:
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "RETA ranking requires CUDA because RETA forward() uses tensor.cuda(device)."
+        )
+
+    runtime = _prepare_reta_runtime(
+        reta_code_dir=reta_code_dir,
+        reta_data_dir=reta_data_dir,
+        entities_evaluated=entities_evaluated,
+        top_nfilters=top_nfilters,
+        at_least=at_least,
+        sparsifier=sparsifier,
+        build_type_dictionaries=build_type_dictionaries,
+        device=device,
+    )
+
+    reta = runtime["reta"]
+    reta_data_path = runtime["reta_data_path"]
+    model = torch.load(Path(model_path).resolve(), map_location=device)
+    model.eval()
+    model.to(device)
+
+    candidate_predictions = load_ranked_predictions(candidate_file)
+    ranked_predictions: Dict[int, List[Tuple[int, int, Optional[float]]]] = {}
+
+    processed_heads = 0
+    for head_id, candidate_rows in candidate_predictions.items():
+        if max_facts is not None and processed_heads >= max_facts:
+            break
+        processed_heads += 1
+
+        template_fact = runtime["head_to_template_fact"].get(int(head_id))
+        if template_fact is None:
+            continue
+
+        candidate_pairs = [(int(relation_id), int(tail_id)) for relation_id, tail_id, _ in candidate_rows]
+        candidate_pairs = list(dict.fromkeys(candidate_pairs))
+        if not candidate_pairs:
+            continue
+
+        grouped_facts, idx2relation_tail = _build_reta_facts_from_candidate_pairs(
+            reta=reta,
+            fact=template_fact,
+            candidate_pairs=candidate_pairs,
+            entity2sparsified_types=runtime["entity2sparsified_types"],
+            unk_type_id=runtime["unk_type_id"],
+        )
+        if not grouped_facts or not idx2relation_tail:
+            continue
+
+        score_lists = reta.get_scores_from_reta_filtered_results(grouped_facts, model, device)
+        if not score_lists:
+            continue
+
+        scores = np.concatenate(score_lists).ravel()
+        sorted_indices = (-scores).argsort()
+
+        ranked_rows: List[Tuple[int, int, Optional[float]]] = []
+        for index in sorted_indices:
+            relation_id, tail_id = idx2relation_tail[int(index)]
+            ranked_rows.append((int(relation_id), int(tail_id), float(scores[int(index)])))
+
+        ranked_predictions[int(head_id)] = _dedupe_ranked_pairs(ranked_rows)
+
+    if map_to_sjp_dataset_dir is not None:
+        entity_id_map, relation_id_map = _build_reta_to_sjp_id_maps(
+            reta_data_dir=reta_data_path,
+            sjp_dataset_dir=map_to_sjp_dataset_dir,
+        )
+        ranked_predictions = _map_predictions_with_id_maps(ranked_predictions, entity_id_map, relation_id_map)
+
+    ranked_predictions = apply_candidate_budget(ranked_predictions, candidate_budget)
+    save_ranked_predictions(ranked_predictions, output_file)
+    logger.info("Ranked RETA candidates for %d heads", len(ranked_predictions))
+    return ranked_predictions
+
+
+def _build_reta_to_sjp_id_maps(
+    reta_data_dir: str | Path,
+    sjp_dataset_dir: str | Path,
+) -> Tuple[Dict[int, int], Dict[int, int]]:
+    reta_data_path = Path(reta_data_dir).resolve()
+    with (reta_data_path / "dictionaries_and_facts.bin").open("rb") as handle:
+        data_info = pickle.load(handle)
+
+    reta_entity_label_to_id: Dict[str, int] = data_info["values_indexes"]
+    reta_relation_label_to_id: Dict[str, int] = data_info["roles_indexes"]
+
+    sjp_entity_label_to_id, sjp_relation_label_to_id = _load_sjp_canonical_maps(Path(sjp_dataset_dir).resolve())
+
+    entity_id_map: Dict[int, int] = {}
+    for label, reta_id in reta_entity_label_to_id.items():
+        if label not in sjp_entity_label_to_id:
+            raise KeyError(f"Entity label '{label}' in RETA mapping is missing from SJP mapping.")
+        entity_id_map[int(reta_id)] = int(sjp_entity_label_to_id[label])
+
+    relation_id_map: Dict[int, int] = {}
+    for label, reta_id in reta_relation_label_to_id.items():
+        if label not in sjp_relation_label_to_id:
+            raise KeyError(f"Relation label '{label}' in RETA mapping is missing from SJP mapping.")
+        relation_id_map[int(reta_id)] = int(sjp_relation_label_to_id[label])
+
+    return entity_id_map, relation_id_map
+
+
+def _map_predictions_with_id_maps(
+    predictions: Dict[int, List[Tuple[int, int, Optional[float]]]],
+    entity_id_map: Dict[int, int],
+    relation_id_map: Dict[int, int],
+) -> Dict[int, List[Tuple[int, int, Optional[float]]]]:
+    mapped: Dict[int, List[Tuple[int, int, Optional[float]]]] = {}
+    for head_id, ranked in predictions.items():
+        new_head = entity_id_map.get(int(head_id))
+        if new_head is None:
+            continue
+        mapped_ranked: List[Tuple[int, int, Optional[float]]] = []
+        for relation_id, tail_id, score in ranked:
+            new_relation = relation_id_map.get(int(relation_id))
+            new_tail = entity_id_map.get(int(tail_id))
+            if new_relation is None or new_tail is None:
+                continue
+            mapped_ranked.append((new_relation, new_tail, score))
+        mapped[new_head] = mapped_ranked
+    return mapped
 
 
 def _results_to_jsonable(results: MetricResults) -> Dict[str, Any]:
@@ -1045,225 +1114,101 @@ def _normalise_delimiter(raw: Optional[str]) -> Optional[str]:
     return raw
 
 
-def _add_dataset_source_args(parser: argparse.ArgumentParser) -> None:
-    source_group = parser.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
-        "--kg-dataset-name",
-        default=None,
-        help="Built-in KgLoader dataset name (for example fb15k237, wn18rr, codex-small).",
-    )
-    source_group.add_argument(
-        "--source-dir",
-        default=None,
-        help="Directory containing downloaded train/valid/test files.",
-    )
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="none")
-    parser.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
-    parser.add_argument("--delimiter", default=None, help="Optional delimiter. Use \\t for tab.")
-    parser.add_argument("--has-header", action="store_true", default=False)
-    parser.add_argument("--overwrite", action="store_true", default=False)
-
-
-def _add_adapter_candidate_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--adapter", choices=["sjp", "reta"], required=True)
-    parser.add_argument("--output-file", required=True, help="Standardized output file (.csv or .pt).")
-    parser.add_argument("--candidate-budget", type=int, default=500)
-
-    # SJP adapter options
-    parser.add_argument("--phase2-candidate-file", default=None, help="Existing SJP phase-2 candidate file to standardize.")
-    parser.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
-    parser.add_argument("--path-setup", default="20_10")
-    parser.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
-    parser.add_argument("--log-dir", default="./logs/harmonized")
-    parser.add_argument("--expname", default="harmonized_sjp")
-    parser.add_argument("--candidate-output-dir", default=None)
-    parser.add_argument("--tuple-checkpoint", default=None)
-    parser.add_argument("--triple-checkpoint", default=None)
-    parser.add_argument("--runner-arg", action="append", default=[], help="Extra argument passed to SJP runner. Repeatable.")
-    parser.add_argument("--sjp-code-dir", default=None, help="Optional path to SJP_code root.")
-
-    # RETA adapter options
-    parser.add_argument("--reta-code-dir", default=None, help="Path to RETA_code root.")
-    parser.add_argument("--reta-data-dir", default=None, help="Path to RETA prepared dataset directory.")
-    parser.add_argument("--model-path", default=None, help="Path to trained RETA model file.")
-    parser.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
-    parser.add_argument("--top-nfilters", type=int, default=-10)
-    parser.add_argument("--at-least", type=int, default=2)
-    parser.add_argument("--sparsifier", type=int, default=2)
-    parser.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
-    parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--max-facts", type=int, default=None)
-    parser.add_argument("--map-to-sjp-dataset-dir", default=None)
-
-
 def _build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Harmonized SJP/RETA interface for canonical dataset generation, "
-            "adapter conversion, candidate generation, and shared evaluation."
+            "Harmonized SJP/RETA interface for standardized dataset generation, "
+            "adapter translation, candidate generation, and ranking."
         )
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # User-requested workflow commands.
-    workflow_generate = sub.add_parser(
-        "generate-dataset",
-        help="Step 1: Generate canonical dataset files (train/valid/test).",
+    generate_standard = sub.add_parser(
+        "generate-standard-dataset",
+        help="Generate standardized train/valid/test text files from a built-in KgLoader dataset name.",
     )
-    _add_dataset_source_args(workflow_generate)
+    generate_standard.add_argument("--dataset-name", required=True)
+    generate_standard.add_argument("--output-dir", required=True)
+    generate_standard.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="none")
+    generate_standard.add_argument("--overwrite", action="store_true", default=False)
 
-    workflow_translate = sub.add_parser(
-        "translate-dataset",
-        help="Step 2: Translate canonical dataset to adapter-specific format.",
+    prepare_dataset = sub.add_parser(
+        "prepare-dataset",
+        help="Prepare predictor-specific dataset files from a standardized dataset via adapter.",
     )
-    workflow_translate.add_argument("--adapter", choices=["sjp", "reta"], required=True)
-    workflow_translate.add_argument("--standard-dataset-dir", required=True)
-    workflow_translate.add_argument("--output-dir", required=True)
-    workflow_translate.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
-    workflow_translate.add_argument("--delimiter", default=None, help="Optional delimiter. Use \\t for tab.")
-    workflow_translate.add_argument("--has-header", action="store_true", default=False)
-    workflow_translate.add_argument("--overwrite", action="store_true", default=False)
-    workflow_translate.add_argument("--num-paths-per-entity", type=int, default=20)
-    workflow_translate.add_argument("--num-steps", type=int, default=10)
-    workflow_translate.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True)
-    workflow_translate.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="manual")
-    workflow_translate.add_argument("--default-entity-type", default="Thing")
-    workflow_translate.add_argument("--skip-reta-bin", action="store_true")
-    workflow_translate.add_argument("--sjp-code-dir", default=None)
-    workflow_translate.add_argument("--reta-code-dir", default=None)
+    prepare_dataset.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    prepare_dataset.add_argument("--standard-dataset-dir", required=True)
+    prepare_dataset.add_argument("--output-dir", required=True)
+    prepare_dataset.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
+    prepare_dataset.add_argument("--delimiter", default=None, help="Optional delimiter. Use \\t for tab.")
+    prepare_dataset.add_argument("--has-header", action="store_true", default=False)
+    prepare_dataset.add_argument("--overwrite", action="store_true", default=False)
+    prepare_dataset.add_argument("--num-paths-per-entity", type=int, default=20)
+    prepare_dataset.add_argument("--num-steps", type=int, default=10)
+    prepare_dataset.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True)
+    prepare_dataset.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="manual")
+    prepare_dataset.add_argument("--default-entity-type", default="Thing")
+    prepare_dataset.add_argument("--skip-reta-bin", action="store_true")
+    prepare_dataset.add_argument("--sjp-code-dir", default=None)
+    prepare_dataset.add_argument("--reta-code-dir", default=None)
 
-    workflow_generate_candidates = sub.add_parser(
+    generate_candidates = sub.add_parser(
         "generate-candidates",
-        help="Step 3: Generate candidates via adapter and save standardized output.",
+        help="Generate standardized candidate CSV via the selected adapter.",
     )
-    _add_adapter_candidate_args(workflow_generate_candidates)
+    generate_candidates.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    generate_candidates.add_argument("--output-file", required=True, help="Standardized CSV output path.")
+    generate_candidates.add_argument("--candidate-budget", type=int, default=500)
+    generate_candidates.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
+    generate_candidates.add_argument("--path-setup", default="20_10")
+    generate_candidates.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
+    generate_candidates.add_argument("--log-dir", default="./logs/harmonized")
+    generate_candidates.add_argument("--expname", default="harmonized_sjp")
+    generate_candidates.add_argument("--num-workers", type=int, default=1)
+    generate_candidates.add_argument("--max-epochs", type=int, default=100)
+    generate_candidates.add_argument("--tuple-checkpoint", default=None)
+    generate_candidates.add_argument("--skip-phase1", action="store_true", default=False)
+    generate_candidates.add_argument("--sjp-code-dir", default=None)
+    generate_candidates.add_argument("--reta-code-dir", default=None)
+    generate_candidates.add_argument("--reta-data-dir", default=None, help="Path to RETA prepared dataset directory.")
+    generate_candidates.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
+    generate_candidates.add_argument("--top-nfilters", type=int, default=-10)
+    generate_candidates.add_argument("--at-least", type=int, default=2)
+    generate_candidates.add_argument("--sparsifier", type=int, default=2)
+    generate_candidates.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
+    generate_candidates.add_argument("--device", default="cuda:0")
+    generate_candidates.add_argument("--max-facts", type=int, default=None)
+    generate_candidates.add_argument("--map-to-sjp-dataset-dir", default=None)
 
-    workflow_rank_candidates = sub.add_parser(
+    rank_candidates = sub.add_parser(
         "rank-candidates",
-        help="Step 4: Produce final ranked output via adapter and save standardized file.",
+        help="Rank standardized candidate CSV via the selected adapter.",
     )
-    _add_adapter_candidate_args(workflow_rank_candidates)
-
-    # Backward-compatible aliases for earlier commands.
-    standard_parser = sub.add_parser(
-        "generate-standard",
-        help="Alias of generate-dataset.",
-    )
-    _add_dataset_source_args(standard_parser)
-
-    prepare_sjp_parser = sub.add_parser(
-        "prepare-sjp",
-        help="Alias of translate-dataset --adapter sjp.",
-    )
-    prepare_sjp_parser.add_argument("--standard-dataset-dir", required=True)
-    prepare_sjp_parser.add_argument("--output-dir", required=True)
-    prepare_sjp_parser.add_argument("--num-paths-per-entity", type=int, default=20)
-    prepare_sjp_parser.add_argument("--num-steps", type=int, default=10)
-    prepare_sjp_parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True)
-    prepare_sjp_parser.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="manual")
-    prepare_sjp_parser.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
-    prepare_sjp_parser.add_argument("--delimiter", default=None, help="Optional delimiter. Use \\t for tab.")
-    prepare_sjp_parser.add_argument("--has-header", action="store_true", default=False)
-    prepare_sjp_parser.add_argument("--overwrite", action="store_true", default=False)
-
-    prepare_reta_parser = sub.add_parser(
-        "prepare-reta",
-        help="Alias of translate-dataset --adapter reta.",
-    )
-    prepare_reta_parser.add_argument("--standard-dataset-dir", required=True)
-    prepare_reta_parser.add_argument("--output-dir", required=True)
-    prepare_reta_parser.add_argument("--default-entity-type", default="Thing")
-    prepare_reta_parser.add_argument("--skip-reta-bin", action="store_true")
-    prepare_reta_parser.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
-    prepare_reta_parser.add_argument("--delimiter", default=None, help="Optional delimiter. Use \\t for tab.")
-    prepare_reta_parser.add_argument("--has-header", action="store_true", default=False)
-    prepare_reta_parser.add_argument("--overwrite", action="store_true", default=False)
-
-    standardize_candidates_parser = sub.add_parser(
-        "standardize-candidates",
-        help="Convert existing candidate artifacts into canonical ranked format.",
-    )
-    standardize_candidates_parser.add_argument("--candidate-file", required=True)
-    standardize_candidates_parser.add_argument("--output-file", required=True, help="Must end with .csv or .pt")
-    standardize_candidates_parser.add_argument("--candidate-budget", type=int, default=None)
-
-    run_sjp_parser = sub.add_parser(
-        "run-sjp-phase2",
-        help="Run SJP phase-2 candidate generation and optionally standardize output.",
-    )
-    run_sjp_parser.add_argument("--path-dataset-dir", required=True, help="SJP path dataset root containing train/val/test directories.")
-    run_sjp_parser.add_argument("--candidate-budget", type=int, default=500)
-    run_sjp_parser.add_argument("--path-setup", default="20_10")
-    run_sjp_parser.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
-    run_sjp_parser.add_argument("--log-dir", default="./logs/harmonized")
-    run_sjp_parser.add_argument("--expname", default="harmonized_sjp")
-    run_sjp_parser.add_argument("--candidate-output-dir", default=None)
-    run_sjp_parser.add_argument("--tuple-checkpoint", default=None)
-    run_sjp_parser.add_argument("--triple-checkpoint", default=None)
-    run_sjp_parser.add_argument("--runner-arg", action="append", default=[], help="Extra argument passed to PathE runner. Repeatable.")
-    run_sjp_parser.add_argument("--output-file", default=None, help="Optional canonical ranking output (.csv or .pt).")
-
-    export_parser = sub.add_parser(
-        "export-reta",
-        help="Export an SJP path dataset directory into RETA-compatible files.",
-    )
-    export_parser.add_argument("--path-dataset-dir", required=True, help="Path to SJP dataset root (contains train/val/test).")
-    export_parser.add_argument("--output-dir", required=True, help="Output directory for RETA-formatted files.")
-    export_parser.add_argument("--default-entity-type", default="Thing", help="Fallback type assigned to all entities.")
-    export_parser.add_argument(
-        "--skip-reta-bin",
-        action="store_true",
-        help="Do not build dictionaries_and_facts.bin (only export text/json/type files).",
-    )
-
-    extract_parser = sub.add_parser(
-        "extract-reta",
-        help="Extract RETA candidate rankings from a trained RETA model.",
-    )
-    extract_parser.add_argument("--reta-code-dir", required=True, help="Path to code/RETA_code.")
-    extract_parser.add_argument("--reta-data-dir", required=True, help="Path to RETA dataset directory.")
-    extract_parser.add_argument("--model-path", required=True, help="Path to trained RETA model file.")
-    extract_parser.add_argument("--output-file", required=True, help="Where to save extracted rankings (.csv or .pt).")
-    extract_parser.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
-    extract_parser.add_argument("--top-nfilters", type=int, default=-10)
-    extract_parser.add_argument("--at-least", type=int, default=2)
-    extract_parser.add_argument("--sparsifier", type=int, default=2)
-    extract_parser.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
-    extract_parser.add_argument("--device", default="cuda:0")
-    extract_parser.add_argument("--max-facts", type=int, default=None, help="Optional cap for debug runs.")
-    extract_parser.add_argument("--candidate-budget", type=int, default=None, help="Optional per-head top-k cap.")
-    extract_parser.add_argument(
-        "--map-to-sjp-dataset-dir",
-        default=None,
-        help="Optional SJP dataset root to remap RETA ids into SJP id space by labels.",
-    )
-
-    eval_parser = sub.add_parser(
-        "evaluate",
-        help="Evaluate one candidate file with shared metrics.",
-    )
-    eval_parser.add_argument("--candidate-file", required=True)
-    eval_parser.add_argument("--gold-triples", required=True, help="Path to test triples.pt")
-    eval_parser.add_argument("--k-values", default="1,3,5,10,20,50,100")
-    eval_parser.add_argument("--name", default="Method")
-    eval_parser.add_argument("--output-json", default=None)
-
-    compare_parser = sub.add_parser(
-        "compare",
-        help="Compare multiple candidate files with shared metrics.",
-    )
-    compare_parser.add_argument("--gold-triples", required=True, help="Path to test triples.pt")
-    compare_parser.add_argument("--k-values", default="1,3,5,10,20,50,100")
-    compare_parser.add_argument(
-        "--method",
-        action="append",
-        nargs=2,
-        metavar=("NAME", "CANDIDATE_FILE"),
-        required=True,
-        help="Add a method by name and candidate file path. Can be repeated.",
-    )
-    compare_parser.add_argument("--output-json", default=None)
+    rank_candidates.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    rank_candidates.add_argument("--candidate-file", required=True, help="Standardized candidate CSV input path.")
+    rank_candidates.add_argument("--output-file", required=True, help="Standardized ranked CSV output path.")
+    rank_candidates.add_argument("--candidate-budget", type=int, default=500)
+    rank_candidates.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
+    rank_candidates.add_argument("--path-setup", default="20_10")
+    rank_candidates.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
+    rank_candidates.add_argument("--log-dir", default="./logs/harmonized")
+    rank_candidates.add_argument("--expname", default="harmonized_sjp")
+    rank_candidates.add_argument("--num-workers", type=int, default=1)
+    rank_candidates.add_argument("--max-epochs", type=int, default=100)
+    rank_candidates.add_argument("--triple-checkpoint", default=None)
+    rank_candidates.add_argument("--skip-phase2", action="store_true", default=False)
+    rank_candidates.add_argument("--sjp-code-dir", default=None)
+    rank_candidates.add_argument("--reta-code-dir", default=None)
+    rank_candidates.add_argument("--reta-data-dir", default=None, help="Path to RETA prepared dataset directory.")
+    rank_candidates.add_argument("--model-path", default=None, help="Path to trained RETA model file.")
+    rank_candidates.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
+    rank_candidates.add_argument("--top-nfilters", type=int, default=-10)
+    rank_candidates.add_argument("--at-least", type=int, default=2)
+    rank_candidates.add_argument("--sparsifier", type=int, default=2)
+    rank_candidates.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
+    rank_candidates.add_argument("--device", default="cuda:0")
+    rank_candidates.add_argument("--max-facts", type=int, default=None)
+    rank_candidates.add_argument("--map-to-sjp-dataset-dir", default=None)
 
     return parser
 
@@ -1277,29 +1222,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = _build_cli()
     args = parser.parse_args(argv)
 
-    if args.command in {"generate-dataset", "generate-standard"}:
-        delimiter = _normalise_delimiter(args.delimiter)
-        if args.kg_dataset_name is not None:
-            summary = generate_standardized_dataset_from_kgloader(
-                dataset_name=args.kg_dataset_name,
-                output_dir=args.output_dir,
-                inverse_mode=args.inverse_mode,
-                overwrite=args.overwrite,
-            )
-        else:
-            summary = canonicalize_downloaded_dataset(
-                source_dir=args.source_dir,
-                output_dir=args.output_dir,
-                triple_order=args.triple_order,
-                delimiter=delimiter,
-                has_header=args.has_header,
-                overwrite=args.overwrite,
-            )
-        summary["workflow_step"] = "generate-dataset"
+    if args.command == "generate-standard-dataset":
+        summary = generate_standardized_dataset_from_kgloader(
+            dataset_name=args.dataset_name,
+            output_dir=args.output_dir,
+            inverse_mode=args.inverse_mode,
+            overwrite=args.overwrite,
+        )
+        summary["workflow_step"] = "generate-standard-dataset"
         print(json.dumps(summary, indent=2))
         return
 
-    if args.command == "translate-dataset":
+    if args.command == "prepare-dataset":
         from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
 
         delimiter = _normalise_delimiter(args.delimiter)
@@ -1331,45 +1265,105 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 overwrite=args.overwrite,
             )
 
-        summary["workflow_step"] = "translate-dataset"
+        summary["workflow_step"] = "prepare-dataset"
         summary["adapter"] = args.adapter.upper()
         print(json.dumps(summary, indent=2))
         return
 
-    if args.command in {"generate-candidates", "rank-candidates"}:
+    if args.command == "generate-candidates":
         from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
 
-        method_name = "generate_candidates" if args.command == "generate-candidates" else "generate_final_ranking"
+        if Path(args.output_file).suffix.lower() != ".csv":
+            raise ValueError("--output-file must end with .csv for generate-candidates")
 
         if args.adapter == "sjp":
             adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
-            method = getattr(adapter, method_name)
-            predictions = method(
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter sjp")
+            predictions = adapter.generate_candidates(
                 output_file=args.output_file,
                 candidate_budget=args.candidate_budget,
-                phase2_candidate_file=args.phase2_candidate_file,
-                run_submodule=args.phase2_candidate_file is None,
                 path_dataset_dir=args.path_dataset_dir,
                 path_setup=args.path_setup,
                 cmd=args.cmd,
                 log_dir=args.log_dir,
                 expname=args.expname,
-                candidate_output_dir=args.candidate_output_dir,
+                num_workers=args.num_workers,
+                max_epochs=args.max_epochs,
                 tuple_checkpoint=args.tuple_checkpoint,
-                triple_checkpoint=args.triple_checkpoint,
-                additional_runner_args=args.runner_arg,
+                skip_phase1=args.skip_phase1,
             )
             summary = {
-                "workflow_step": args.command,
+                "workflow_step": "generate-candidates",
                 "adapter": "SJP",
                 "output_file": str(Path(args.output_file).resolve()),
                 "candidate_budget": int(args.candidate_budget),
                 "num_heads": len(predictions),
-                "source": (
-                    str(Path(args.phase2_candidate_file).resolve())
-                    if args.phase2_candidate_file is not None
-                    else str(Path(args.path_dataset_dir).resolve()) if args.path_dataset_dir is not None else None
-                ),
+                "path_dataset_dir": str(Path(args.path_dataset_dir).resolve()),
+            }
+            print(json.dumps(summary, indent=2))
+            return
+
+        reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
+        if args.reta_data_dir is None:
+            raise ValueError("--reta-data-dir is required when --adapter reta")
+        adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
+        predictions = adapter.generate_candidates(
+            output_file=args.output_file,
+            candidate_budget=args.candidate_budget,
+            entities_evaluated=args.entities_evaluated,
+            top_nfilters=args.top_nfilters,
+            at_least=args.at_least,
+            sparsifier=args.sparsifier,
+            build_type_dictionaries=args.build_type_dictionaries,
+            device=args.device,
+            max_facts=args.max_facts,
+            map_to_sjp_dataset_dir=args.map_to_sjp_dataset_dir,
+        )
+        summary = {
+            "workflow_step": "generate-candidates",
+            "adapter": "RETA",
+            "output_file": str(Path(args.output_file).resolve()),
+            "candidate_budget": int(args.candidate_budget),
+            "num_heads": len(predictions),
+            "reta_data_dir": str(Path(args.reta_data_dir).resolve()),
+        }
+        print(json.dumps(summary, indent=2))
+        return
+
+    if args.command == "rank-candidates":
+        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+
+        if Path(args.candidate_file).suffix.lower() != ".csv":
+            raise ValueError("--candidate-file must end with .csv for rank-candidates")
+        if Path(args.output_file).suffix.lower() != ".csv":
+            raise ValueError("--output-file must end with .csv for rank-candidates")
+
+        if args.adapter == "sjp":
+            adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter sjp")
+            predictions = adapter.rank_candidates(
+                candidate_file=args.candidate_file,
+                output_file=args.output_file,
+                candidate_budget=args.candidate_budget,
+                path_dataset_dir=args.path_dataset_dir,
+                path_setup=args.path_setup,
+                cmd=args.cmd,
+                log_dir=args.log_dir,
+                expname=args.expname,
+                num_workers=args.num_workers,
+                max_epochs=args.max_epochs,
+                triple_checkpoint=args.triple_checkpoint,
+                skip_phase2=args.skip_phase2,
+            )
+            summary = {
+                "workflow_step": "rank-candidates",
+                "adapter": "SJP",
+                "candidate_file": str(Path(args.candidate_file).resolve()),
+                "output_file": str(Path(args.output_file).resolve()),
+                "candidate_budget": int(args.candidate_budget),
+                "num_heads": len(predictions),
             }
             print(json.dumps(summary, indent=2))
             return
@@ -1381,8 +1375,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--model-path is required when --adapter reta")
 
         adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
-        method = getattr(adapter, method_name)
-        predictions = method(
+        predictions = adapter.rank_candidates(
+            candidate_file=args.candidate_file,
             model_path=args.model_path,
             output_file=args.output_file,
             candidate_budget=args.candidate_budget,
@@ -1396,8 +1390,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             map_to_sjp_dataset_dir=args.map_to_sjp_dataset_dir,
         )
         summary = {
-            "workflow_step": args.command,
+            "workflow_step": "rank-candidates",
             "adapter": "RETA",
+            "candidate_file": str(Path(args.candidate_file).resolve()),
             "output_file": str(Path(args.output_file).resolve()),
             "candidate_budget": int(args.candidate_budget),
             "num_heads": len(predictions),
@@ -1405,124 +1400,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "model_path": str(Path(args.model_path).resolve()),
         }
         print(json.dumps(summary, indent=2))
-        return
-
-    if args.command == "prepare-sjp":
-        delimiter = _normalise_delimiter(args.delimiter)
-        summary = export_standardized_dataset_to_sjp(
-            standardized_dataset_dir=args.standard_dataset_dir,
-            output_dir=args.output_dir,
-            num_paths_per_entity=args.num_paths_per_entity,
-            num_steps=args.num_steps,
-            parallel=bool(args.parallel),
-            inverse_mode=args.inverse_mode,
-            triple_order=args.triple_order,
-            delimiter=delimiter,
-            has_header=args.has_header,
-            overwrite=args.overwrite,
-        )
-        print(json.dumps(summary, indent=2))
-        return
-
-    if args.command == "prepare-reta":
-        delimiter = _normalise_delimiter(args.delimiter)
-        summary = export_standard_dataset_to_reta(
-            standardized_dataset_dir=args.standard_dataset_dir,
-            output_dir=args.output_dir,
-            default_entity_type=args.default_entity_type,
-            build_reta_bin=not args.skip_reta_bin,
-            triple_order=args.triple_order,
-            delimiter=delimiter,
-            has_header=args.has_header,
-            overwrite=args.overwrite,
-        )
-        print(json.dumps(summary, indent=2))
-        return
-
-    if args.command == "standardize-candidates":
-        predictions = load_ranked_predictions(args.candidate_file)
-        predictions = apply_candidate_budget(predictions, args.candidate_budget)
-        saved = save_ranked_predictions(predictions, args.output_file)
-        print(json.dumps({"output_file": str(saved), "num_heads": len(predictions)}, indent=2))
-        return
-
-    if args.command == "run-sjp-phase2":
-        from iswc.harmonized.adapters import SJPAdapter
-
-        adapter = SJPAdapter()
-        run_summary = adapter.run_phase2_submodule(
-            path_dataset_dir=args.path_dataset_dir,
-            candidate_budget=args.candidate_budget,
-            path_setup=args.path_setup,
-            cmd=args.cmd,
-            log_dir=args.log_dir,
-            expname=args.expname,
-            candidate_output_dir=args.candidate_output_dir,
-            tuple_checkpoint=args.tuple_checkpoint,
-            triple_checkpoint=args.triple_checkpoint,
-            additional_runner_args=args.runner_arg,
-        )
-
-        if args.output_file is not None:
-            predictions = adapter.generate_candidates(
-                output_file=args.output_file,
-                candidate_budget=args.candidate_budget,
-                phase2_candidate_file=run_summary["phase2_candidate_file"],
-            )
-            run_summary["standardized_output_file"] = str(Path(args.output_file).resolve())
-            run_summary["standardized_num_heads"] = len(predictions)
-
-        print(json.dumps(run_summary, indent=2))
-        return
-
-    if args.command == "export-reta":
-        summary = export_sjp_dataset_to_reta(
-            path_dataset_dir=args.path_dataset_dir,
-            output_dir=args.output_dir,
-            default_entity_type=args.default_entity_type,
-            build_reta_bin=not args.skip_reta_bin,
-        )
-        print(json.dumps(summary, indent=2))
-        return
-
-    if args.command == "extract-reta":
-        predictions = extract_reta_candidates(
-            reta_code_dir=args.reta_code_dir,
-            reta_data_dir=args.reta_data_dir,
-            model_path=args.model_path,
-            output_file=args.output_file,
-            entities_evaluated=args.entities_evaluated,
-            top_nfilters=args.top_nfilters,
-            at_least=args.at_least,
-            sparsifier=args.sparsifier,
-            build_type_dictionaries=args.build_type_dictionaries,
-            device=args.device,
-            max_facts=args.max_facts,
-            map_to_sjp_dataset_dir=args.map_to_sjp_dataset_dir,
-            candidate_budget=args.candidate_budget,
-        )
-        print(f"Extracted rankings for {len(predictions)} heads into {args.output_file}")
-        return
-
-    if args.command == "evaluate":
-        k_values = parse_k_values(args.k_values)
-        result = evaluate_candidate_file(args.candidate_file, args.gold_triples, k_values)
-        method_results = {args.name: result}
-        print(format_results_table(method_results, k=max(k_values)))
-
-        if args.output_json is not None:
-            payload = {args.name: _results_to_jsonable(result)}
-            output_path = Path(args.output_json).resolve()
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2)
-            logger.info("Saved evaluation metrics to %s", output_path)
-        return
-
-    if args.command == "compare":
-        methods = {name: candidate for name, candidate in args.method}
-        k_values = parse_k_values(args.k_values)
-        run_compare(methods, args.gold_triples, k_values, output_json=args.output_json)
         return
 
     raise ValueError(f"Unsupported command {args.command}")
