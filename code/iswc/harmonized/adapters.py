@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from argparse import Namespace
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ import torch
 from .dataset import export_standardized_dataset_to_sjp
 from .interface import (
     apply_candidate_budget,
+    build_reta_dictionaries,
     export_standard_dataset_to_reta,
     extract_reta_filter_candidates,
     load_ranked_predictions,
@@ -432,29 +434,60 @@ class RETAAdapter(CandidateAdapter):
     reta_data_dir: str | Path
     name: str = "RETA"
 
+    def _resolve_reta_data_dir(self) -> Path:
+        return Path(self.reta_data_dir).resolve()
+
+    def _load_reta_id_maps(self) -> Tuple[Optional[Dict[str, int]], Optional[Dict[str, int]]]:
+        reta_data_path = self._resolve_reta_data_dir()
+        entity_file = reta_data_path / "entity2id.json"
+        relation_file = reta_data_path / "relation2id.json"
+
+        if not entity_file.is_file() or not relation_file.is_file():
+            return None, None
+
+        with entity_file.open("r", encoding="utf-8") as handle:
+            values_indexes = {str(key): int(value) for key, value in json.load(handle).items()}
+        with relation_file.open("r", encoding="utf-8") as handle:
+            roles_indexes = {str(key): int(value) for key, value in json.load(handle).items()}
+        return values_indexes, roles_indexes
+
+    def _ensure_reta_dictionary_bundle(self, force_rebuild: bool = False) -> Path:
+        reta_data_path = self._resolve_reta_data_dir()
+        dictionary_path = reta_data_path / "dictionaries_and_facts.bin"
+        if dictionary_path.is_file() and not force_rebuild:
+            return dictionary_path
+
+        values_indexes, roles_indexes = self._load_reta_id_maps()
+        return build_reta_dictionaries(
+            reta_data_dir=reta_data_path,
+            values_indexes=values_indexes,
+            roles_indexes=roles_indexes,
+        )
+
     def prepare_dataset(
         self,
         standardized_dataset_dir: str | Path,
         output_dir: str | Path,
         default_entity_type: str = "Thing",
-        build_reta_bin: bool = True,
         triple_order: str = "hrt",
         delimiter: Optional[str] = None,
         has_header: bool = False,
         overwrite: bool = False,
     ) -> Dict[str, Any]:
-        """Convert canonical dataset into RETA n-ary/type/dictionary inputs."""
+        """Convert canonical dataset into RETA inputs and build dictionary bundle."""
         summary = export_standard_dataset_to_reta(
             standardized_dataset_dir=standardized_dataset_dir,
             output_dir=output_dir,
             default_entity_type=default_entity_type,
-            build_reta_bin=build_reta_bin,
             triple_order=triple_order,
             delimiter=delimiter,
             has_header=has_header,
             overwrite=overwrite,
         )
         self.reta_data_dir = summary["reta_output_dir"]
+        dictionary_path = self._ensure_reta_dictionary_bundle(force_rebuild=True)
+        summary["built_reta_dictionary"] = True
+        summary["dictionary_path"] = str(dictionary_path)
         return summary
 
     def generate_candidates(
@@ -471,6 +504,7 @@ class RETAAdapter(CandidateAdapter):
         map_to_sjp_dataset_dir: Optional[str | Path] = None,
     ) -> RankedPredictions:
         """Generate RETA filter candidates in canonical format."""
+        self._ensure_reta_dictionary_bundle(force_rebuild=False)
         return extract_reta_filter_candidates(
             reta_code_dir=self.reta_code_dir,
             reta_data_dir=self.reta_data_dir,
@@ -502,6 +536,7 @@ class RETAAdapter(CandidateAdapter):
         map_to_sjp_dataset_dir: Optional[str | Path] = None,
     ) -> RankedPredictions:
         """Rank RETA candidates with RETA grader in canonical format."""
+        self._ensure_reta_dictionary_bundle(force_rebuild=False)
         return rank_reta_candidates(
             reta_code_dir=self.reta_code_dir,
             reta_data_dir=self.reta_data_dir,

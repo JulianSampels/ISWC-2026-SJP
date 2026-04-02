@@ -8,7 +8,6 @@ __all__ = [
     "load_standardized_dataset_triples",
     "generate_standardized_dataset_from_kgloader",
     "export_standardized_dataset_to_sjp",
-    "build_reta_dictionaries",
     "export_standard_dataset_to_reta",
     "extract_reta_filter_candidates",
     "rank_reta_candidates",
@@ -17,6 +16,11 @@ __all__ = [
     "save_ranked_predictions",
     "save_ranked_predictions_csv",
     "save_ranked_predictions_pt",
+    "evaluate_candidates_csv",
+    "evaluate_ranked_candidates_csv",
+    "evaluate_candidate_metrics_from_files",
+    "evaluate_ranked_metrics_from_files",
+    "save_metrics_csv",
 ]
 
 
@@ -51,7 +55,6 @@ def __getattr__(name: str):
         }[name]
 
     if name in {
-        "build_reta_dictionaries",
         "export_standard_dataset_to_reta",
         "extract_reta_filter_candidates",
         "rank_reta_candidates",
@@ -60,10 +63,13 @@ def __getattr__(name: str):
         "save_ranked_predictions",
         "save_ranked_predictions_csv",
         "save_ranked_predictions_pt",
+        "evaluate_candidates_csv",
+        "evaluate_ranked_candidates_csv",
     }:
         from .interface import (
             apply_candidate_budget,
-            build_reta_dictionaries,
+            evaluate_candidates_csv,
+            evaluate_ranked_candidates_csv,
             export_standard_dataset_to_reta,
             extract_reta_filter_candidates,
             load_ranked_predictions,
@@ -74,7 +80,6 @@ def __getattr__(name: str):
         )
 
         return {
-            "build_reta_dictionaries": build_reta_dictionaries,
             "export_standard_dataset_to_reta": export_standard_dataset_to_reta,
             "extract_reta_filter_candidates": extract_reta_filter_candidates,
             "rank_reta_candidates": rank_reta_candidates,
@@ -83,6 +88,25 @@ def __getattr__(name: str):
             "save_ranked_predictions": save_ranked_predictions,
             "save_ranked_predictions_csv": save_ranked_predictions_csv,
             "save_ranked_predictions_pt": save_ranked_predictions_pt,
+            "evaluate_candidates_csv": evaluate_candidates_csv,
+            "evaluate_ranked_candidates_csv": evaluate_ranked_candidates_csv,
+        }[name]
+
+    if name in {
+        "evaluate_candidate_metrics_from_files",
+        "evaluate_ranked_metrics_from_files",
+        "save_metrics_csv",
+    }:
+        from .metrics import (
+            evaluate_candidate_metrics_from_files,
+            evaluate_ranked_metrics_from_files,
+            save_metrics_csv,
+        )
+
+        return {
+            "evaluate_candidate_metrics_from_files": evaluate_candidate_metrics_from_files,
+            "evaluate_ranked_metrics_from_files": evaluate_ranked_metrics_from_files,
+            "save_metrics_csv": save_metrics_csv,
         }[name]
 
     raise AttributeError(f"module 'iswc.harmonized' has no attribute '{name}'")

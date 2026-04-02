@@ -44,6 +44,9 @@ python -m iswc.harmonized.interface prepare-dataset \
   --default-entity-type Thing
 ```
 
+The RETA adapter auto-builds `dictionaries_and_facts.bin` during dataset preparation,
+and also auto-checks it before candidate generation and ranking.
+
 ## 3) Generate Candidates
 
 SJP generate candidates executes PathE phase 1 + phase 2.
@@ -102,3 +105,8 @@ Adapter methods:
 - `prepare_dataset(...)`
 - `generate_candidates(...)`
 - `rank_candidates(...)`
+
+Programmatic standardized metric functions:
+
+- `evaluate_candidates_csv(candidate_csv, gold_triples_file, output_csv, k_values=...)`
+- `evaluate_ranked_candidates_csv(ranked_csv, gold_triples_file, output_csv, k_values=...)`

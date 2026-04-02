@@ -4,7 +4,7 @@ Harmonized interface for SJP and RETA dataset/candidate/ranking workflows.
 This module provides a cleaned harmonized workflow:
 1) Generate standardized datasets from KgLoader dataset names.
 2) Convert standardized datasets into SJP- and RETA-specific input layouts.
-3) Build RETA dictionaries_and_facts.bin without modifying RETA_code.
+3) Auto-build RETA dictionaries_and_facts.bin through the RETA adapter lifecycle.
 4) Load/save standardized candidate and ranked CSV files.
 5) Generate candidates (SJP phase 1+2, RETA-Filter).
 6) Rank candidates (SJP phase 3, RETA-Grader).
@@ -25,7 +25,6 @@ import pickle
 import shutil
 import sys
 from collections import defaultdict
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -42,11 +41,15 @@ _CODE_DIR = Path(__file__).resolve().parents[2]
 if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
-from iswc.evaluation import MetricResults, evaluate_entity_centric, format_results_table  # noqa: E402
 from iswc.harmonized.dataset import (  # noqa: E402
     generate_standardized_dataset_from_kgloader,
     load_standardized_dataset_triples,
     resolve_standardized_dataset,
+)
+from iswc.harmonized.metrics import (  # noqa: E402
+    evaluate_candidate_metrics_from_files,
+    evaluate_ranked_metrics_from_files,
+    save_metrics_csv,
 )
 
 
@@ -273,7 +276,6 @@ def export_standard_dataset_to_reta(
     standardized_dataset_dir: str | Path,
     output_dir: str | Path,
     default_entity_type: str = "Thing",
-    build_reta_bin: bool = True,
     triple_order: str = "hrt",
     delimiter: Optional[str] = None,
     has_header: bool = False,
@@ -336,22 +338,12 @@ def export_standard_dataset_to_reta(
     with (reta_output / "relation2id.json").open("w", encoding="utf-8") as handle:
         json.dump(relation_label_to_id, handle, indent=2)
 
-    dictionary_path: Optional[Path] = None
-    if build_reta_bin:
-        dictionary_path = build_reta_dictionaries(
-            reta_data_dir=reta_output,
-            values_indexes=entity_label_to_id,
-            roles_indexes=relation_label_to_id,
-        )
-
     summary = {
         "standardized_dataset_dir": str(standardized.root),
         "reta_output_dir": str(reta_output),
         "num_entities": len(entity_label_to_id),
         "num_relations": len(relation_label_to_id),
         "default_entity_type": default_entity_type,
-        "built_reta_dictionary": bool(build_reta_bin),
-        "dictionary_path": str(dictionary_path) if dictionary_path is not None else None,
     }
     metadata_path = reta_output / "harmonized_export_metadata.json"
     with metadata_path.open("w", encoding="utf-8") as handle:
@@ -620,15 +612,6 @@ def save_ranked_predictions(
     raise ValueError("Output file must end with .csv or .pt")
 
 
-def _to_metric_input(
-    predictions: Dict[int, List[Tuple[int, int, Optional[float]]]]
-) -> Dict[int, List[Tuple[int, int]]]:
-    metric_input: Dict[int, List[Tuple[int, int]]] = {}
-    for head_id, ranked in predictions.items():
-        metric_input[int(head_id)] = [(int(rel_id), int(tail_id)) for rel_id, tail_id, _ in ranked]
-    return metric_input
-
-
 def parse_k_values(raw: str) -> List[int]:
     parsed = [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
     if not parsed:
@@ -639,15 +622,38 @@ def parse_k_values(raw: str) -> List[int]:
     return values
 
 
-def evaluate_candidate_file(
-    candidate_file: str | Path,
+def evaluate_candidates_csv(
+    candidate_csv: str | Path,
     gold_triples_file: str | Path,
-    k_values: Sequence[int],
-) -> MetricResults:
-    predictions = load_ranked_predictions(candidate_file)
-    metric_input = _to_metric_input(predictions)
-    gold_triples = torch.load(Path(gold_triples_file).resolve(), map_location="cpu")
-    return evaluate_entity_centric(metric_input, gold_triples, list(k_values))
+    output_csv: str | Path,
+    k_values: Sequence[int] = (1, 3, 5, 10),
+) -> Dict[str, float]:
+    """Evaluate candidate CSV and persist standardized metric outputs as CSV."""
+    metrics = evaluate_candidate_metrics_from_files(
+        candidate_csv=candidate_csv,
+        gold_triples_file=gold_triples_file,
+        k_values=list(k_values),
+    )
+    save_metrics_csv(metrics, output_csv)
+    logger.info("Saved candidate metrics CSV to %s", Path(output_csv).resolve())
+    return metrics
+
+
+def evaluate_ranked_candidates_csv(
+    ranked_csv: str | Path,
+    gold_triples_file: str | Path,
+    output_csv: str | Path,
+    k_values: Sequence[int] = (1, 3, 5, 10),
+) -> Dict[str, float]:
+    """Evaluate ranked candidate CSV and persist standardized metric outputs as CSV."""
+    metrics = evaluate_ranked_metrics_from_files(
+        ranked_csv=ranked_csv,
+        gold_triples_file=gold_triples_file,
+        k_values=list(k_values),
+    )
+    save_metrics_csv(metrics, output_csv)
+    logger.info("Saved ranked metrics CSV to %s", Path(output_csv).resolve())
+    return metrics
 
 
 def _import_reta_main_module(reta_code_dir: str | Path):
@@ -1077,33 +1083,6 @@ def _map_predictions_with_id_maps(
     return mapped
 
 
-def _results_to_jsonable(results: MetricResults) -> Dict[str, Any]:
-    return asdict(results)
-
-
-def run_compare(
-    methods: Dict[str, str],
-    gold_triples_file: str | Path,
-    k_values: Sequence[int],
-    output_json: Optional[str | Path] = None,
-) -> Dict[str, MetricResults]:
-    evaluated: Dict[str, MetricResults] = {}
-    for name, candidate_file in methods.items():
-        evaluated[name] = evaluate_candidate_file(candidate_file, gold_triples_file, k_values)
-
-    print(format_results_table(evaluated, k=max(k_values)))
-
-    if output_json is not None:
-        payload = {name: _results_to_jsonable(result) for name, result in evaluated.items()}
-        output_path = Path(output_json).resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        logger.info("Saved comparison metrics to %s", output_path)
-
-    return evaluated
-
-
 def _normalise_delimiter(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
@@ -1148,7 +1127,6 @@ def _build_cli() -> argparse.ArgumentParser:
     prepare_dataset.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True)
     prepare_dataset.add_argument("--inverse-mode", choices=["manual", "automatic", "none"], default="manual")
     prepare_dataset.add_argument("--default-entity-type", default="Thing")
-    prepare_dataset.add_argument("--skip-reta-bin", action="store_true")
     prepare_dataset.add_argument("--sjp-code-dir", default=None)
     prepare_dataset.add_argument("--reta-code-dir", default=None)
 
@@ -1258,7 +1236,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 standardized_dataset_dir=args.standard_dataset_dir,
                 output_dir=args.output_dir,
                 default_entity_type=args.default_entity_type,
-                build_reta_bin=not args.skip_reta_bin,
                 triple_order=args.triple_order,
                 delimiter=delimiter,
                 has_header=args.has_header,
