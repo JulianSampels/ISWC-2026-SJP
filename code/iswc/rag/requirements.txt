@@ -1,0 +1,18 @@
+# RAG evaluation dependencies
+# Install with: pip install -r requirements.txt
+
+# LLM providers
+anthropic>=0.25.0
+openai>=1.0.0               # optional — only needed if provider=openai
+
+# Dataset loading
+datasets>=2.18.0            # HuggingFace datasets (WebQSP, CWQ via Hub)
+
+# Retrieval
+rank-bm25>=0.2.2            # BM25 for native text retrieval
+requests>=2.31.0            # Wikidata SPARQL queries
+
+# Utilities
+tqdm>=4.66.0
+pandas>=2.0.0
+numpy>=1.24.0
