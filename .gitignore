@@ -207,3 +207,5 @@ memory
 papers
 
 .vscode/*
+/.agent-shell/
+code/iswc_data
