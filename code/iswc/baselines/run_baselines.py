@@ -3,18 +3,21 @@ Baseline Experiment Runner — Instance Completion on KG Benchmarks
 =================================================================
 
 Runs all combinations of relation predictor × KGC model and reports
-per-triple Hits@K metrics on the test split.
+ranking metrics on the test split.
 
 Evaluation
 ----------
 For each head entity h in the test set:
     - Ground truth: all (r, t) pairs in test_triples with that head
     - Pipeline generates top-N ranked (h, r, t) candidates
-    - For each ground-truth triple (h, r, t), check if it appears
-      in the top-K candidates (K ∈ {1, 5, 10, 50})
 
-Metrics reported (per-triple, micro-averaged across all test triples):
-    Hits@1, Hits@5, Hits@10, Hits@50, MRR
+Metrics reported:
+    Hits@K    — fraction of gold triples appearing in top-K (micro, per-triple)
+    Recall@K  — fraction of gold triples found in top-K (macro, per-entity)
+    NDCG@K    — normalised discounted cumulative gain (macro, per-entity)
+    MAP       — mean average precision (macro, per-entity)
+    MRR       — mean reciprocal rank (micro, per-triple)
+    Coverage@S — fraction of entities with ≥1 gold triple in top-S candidates
 
 Usage
 -----
@@ -40,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 import time
 from collections import defaultdict
@@ -84,25 +88,42 @@ def evaluate_pipeline(
     pipeline: InstanceCompletionPipeline,
     test_heads: List[int],
     ground_truth: Dict[int, Set[Tuple[int, int]]],
-    max_candidates: int,
     k_values: Tuple[int, ...] = (1, 5, 10, 50),
+    coverage_sizes: Tuple[int, ...] = (10, 50, 100, 200, 500, 1000, 5000, 10000, 50000, 100000),
 ) -> Dict[str, float]:
     """
-    Per-triple evaluation of the instance completion pipeline.
+    Comprehensive ranking evaluation of the instance completion pipeline.
 
-    For each test head h:
-        candidates = pipeline.generate_candidates(h, max_candidates)
-        For each ground-truth (r, t) of h:
-            rank = position of (r, t) in the candidate list (1-indexed)
-            → contributes to Hits@K if rank ≤ K, and to MRR as 1/rank
+    For each test head h the pipeline generates a ranked candidate list.
+    Ground-truth (r, t) pairs are located in that list and used to compute:
+
+    Hits@K     — fraction of gold triples with rank ≤ K   (micro, per-triple)
+    Recall@K   — fraction of gold triples found in top-K  (macro, per-entity)
+    NDCG@K     — normalised DCG at K                      (macro, per-entity)
+    MAP        — mean average precision                    (macro, per-entity)
+    MRR        — mean reciprocal rank                      (micro, per-triple)
+    Coverage@S — fraction of entities where ≥1 gold triple has rank ≤ S
 
     Returns
     -------
-    Dict with keys hits@1, hits@5, hits@10, hits@50, mrr, n_triples, n_heads.
+    Dict with keys hits@K, recall@K, ndcg@K, map, mrr, coverage@S,
+    n_triples, n_heads.
     """
-    hits = {k: 0 for k in k_values}
-    rr_sum = 0.0
-    n_triples = 0
+    # precompute IDCG denominators once
+    max_k = max(k_values)
+    _idcg_cache: Dict[int, float] = {}
+    def idcg(n: int) -> float:
+        if n not in _idcg_cache:
+            _idcg_cache[n] = sum(1.0 / math.log2(i + 2) for i in range(n))
+        return _idcg_cache[n]
+
+    hits        = {k: 0   for k in k_values}
+    recall_sum  = {k: 0.0 for k in k_values}
+    ndcg_sum    = {k: 0.0 for k in k_values}
+    coverage    = {s: 0   for s in coverage_sizes}
+    rr_sum      = 0.0
+    map_sum     = 0.0
+    n_triples   = 0
     n_heads_evaluated = 0
 
     for i, h in enumerate(test_heads):
@@ -110,14 +131,17 @@ def evaluate_pipeline(
         if not gold:
             continue
 
-        candidates = pipeline.generate_candidates(h, max_candidates=max_candidates)
-        # Build (r, t) → rank mapping (1-indexed)
+        candidates = pipeline.generate_candidates(h)
+        n_gold = len(gold)
+
+        # ── build rank_of: (r, t) → 1-indexed rank ───────────────────────────
         rank_of: Dict[Tuple[int, int], int] = {}
         for rank, (_, r, t, _) in enumerate(candidates, start=1):
             rt = (r, t)
-            if rt not in rank_of:   # keep best rank if duplicates
+            if rt not in rank_of:
                 rank_of[rt] = rank
 
+        # ── Hits@K, Recall@K, MRR (per-triple loop) ──────────────────────────
         for r, t in gold:
             n_triples += 1
             rank = rank_of.get((r, t))
@@ -127,14 +151,54 @@ def evaluate_pipeline(
                         hits[k] += 1
                 rr_sum += 1.0 / rank
 
+        for k in k_values:
+            found_k = sum(1 for rt in gold if rank_of.get(rt, max_k + 1) <= k)
+            recall_sum[k] += found_k / n_gold
+
+        # ── NDCG@K ────────────────────────────────────────────────────────────
+        for k in k_values:
+            dcg = sum(
+                1.0 / math.log2(rank + 1)
+                for rank, (_, r, t, _) in enumerate(candidates[:k], start=1)
+                if (r, t) in gold
+            )
+            denom = idcg(min(n_gold, k))
+            ndcg_sum[k] += dcg / denom if denom > 0 else 0.0
+
+        # ── MAP ───────────────────────────────────────────────────────────────
+        n_relevant_seen = 0
+        ap = 0.0
+        for rank, (_, r, t, _) in enumerate(candidates, start=1):
+            if (r, t) in gold:
+                n_relevant_seen += 1
+                ap += n_relevant_seen / rank
+        map_sum += ap / n_gold
+
+        # ── Coverage@S ────────────────────────────────────────────────────────
+        min_gold_rank = min(
+            (rank_of[rt] for rt in gold if rt in rank_of),
+            default=None,
+        )
+        for s in coverage_sizes:
+            if min_gold_rank is not None and min_gold_rank <= s:
+                coverage[s] += 1
+
         n_heads_evaluated += 1
         if (i + 1) % 200 == 0:
             logger.info(f"    evaluated {i + 1}/{len(test_heads)} heads …")
 
+    n_h = n_heads_evaluated or 1
+    n_t = n_triples or 1
+
     metrics: Dict[str, float] = {}
     for k in k_values:
-        metrics[f"hits@{k}"] = hits[k] / n_triples if n_triples > 0 else 0.0
-    metrics["mrr"]       = rr_sum / n_triples if n_triples > 0 else 0.0
+        metrics[f"hits@{k}"]   = hits[k]       / n_t
+        metrics[f"recall@{k}"] = recall_sum[k] / n_h
+        metrics[f"ndcg@{k}"]   = ndcg_sum[k]   / n_h
+    metrics["map"]       = map_sum / n_h
+    metrics["mrr"]       = rr_sum  / n_t
+    for s in coverage_sizes:
+        metrics[f"coverage@{s}"] = coverage[s] / n_h
     metrics["n_triples"] = float(n_triples)
     metrics["n_heads"]   = float(n_heads_evaluated)
     return metrics
@@ -143,12 +207,28 @@ def evaluate_pipeline(
 def format_results_table(
     results: Dict[str, Dict[str, float]],
     k_values: Tuple[int, ...] = (1, 5, 10, 50),
+    coverage_sizes: Tuple[int, ...] = (10, 50, 100, 200, 500),
 ) -> str:
-    k_cols    = [f"hits@{k}" for k in k_values]
-    col_hdrs  = [f"H@{k}" for k in k_values] + ["MRR", "Triples"]
-    col_keys  = k_cols + ["mrr", "n_triples"]
-    widths    = [max(8, len(h) + 1) for h in col_hdrs]
-    name_w    = max(30, max(len(n) for n in results) + 2)
+    # Show a representative subset; the full dict is in the JSON output.
+    show_k = [k for k in (1, 10, 50) if k in k_values]
+    col_keys = (
+        [f"hits@{k}"     for k in show_k] +
+        [f"recall@{k}"   for k in show_k] +
+        [f"ndcg@{k}"     for k in show_k] +
+        ["map", "mrr"] +
+        [f"coverage@{s}" for s in coverage_sizes] +
+        ["n_triples"]
+    )
+    col_hdrs = (
+        [f"H@{k}"    for k in show_k] +
+        [f"R@{k}"    for k in show_k] +
+        [f"nDCG@{k}" for k in show_k] +
+        ["MAP", "MRR"] +
+        [f"Cov@{s}"  for s in coverage_sizes] +
+        ["Triples"]
+    )
+    widths = [max(8, len(h) + 1) for h in col_hdrs]
+    name_w = max(30, max(len(n) for n in results) + 2)
 
     header  = f"{'Configuration':<{name_w}}" + "".join(f"{h:>{w}}" for h, w in zip(col_hdrs, widths))
     divider = "-" * len(header)
@@ -284,7 +364,6 @@ def main() -> None:
         f"  Entities: {num_entities}, Relations: {num_relations}, "
         f"Train triples: {len(train_triples)}, Test triples: {len(test_triples)}"
     )
-    import ipdb; ipdb.set_trace()
     # ── Build ground truth ────────────────────────────────────────────────────
     ground_truth: Dict[int, Set[Tuple[int, int]]] = defaultdict(set)
     for h, r, t in test_triples.tolist():
@@ -363,13 +442,17 @@ def main() -> None:
             pipeline=pipeline,
             test_heads=test_heads,
             ground_truth=ground_truth,
-            max_candidates=args.max_candidates,
         )
         elapsed = time.time() - t0
         logger.info(
             f"  Done in {elapsed:.1f}s | "
-            f"H@1={metrics['hits@1']:.4f}  H@10={metrics['hits@10']:.4f}  "
-            f"MRR={metrics['mrr']:.4f}  (triples={int(metrics['n_triples'])})"
+            f"H@10={metrics.get('hits@10', 0):.4f}  "
+            f"R@10={metrics.get('recall@10', 0):.4f}  "
+            f"nDCG@10={metrics.get('ndcg@10', 0):.4f}  "
+            f"MAP={metrics.get('map', 0):.4f}  "
+            f"MRR={metrics.get('mrr', 0):.4f}  "
+            f"Cov@100={metrics.get('coverage@100', 0):.4f}  "
+            f"(triples={int(metrics['n_triples'])})"
         )
 
         all_results[config_name] = metrics
