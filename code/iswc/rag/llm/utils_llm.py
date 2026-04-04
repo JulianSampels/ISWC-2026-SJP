@@ -231,6 +231,23 @@ class OllamaQwen3_8B(OllamaModel):
         super().__init__(model_name="qwen3:8b", system_prompt=system_prompt)
 
 
+class OllamaQwen3_32B(OllamaModel):
+    def __init__(self, *, system_prompt: str = None, **kwargs):
+        super().__init__(model_name="qwen3:32b", system_prompt=system_prompt)
+
+class OllamaQwen3_17B(OllamaModel):
+    def __init__(self, *, system_prompt: str = None, **kwargs):
+        super().__init__(model_name="qwen3:1.7b", system_prompt=system_prompt)
+
+class OllamaLlama31_8B(OllamaModel):
+    def __init__(self, *, system_prompt: str = None, **kwargs):
+        super().__init__(model_name="llama3.1:8b", system_prompt=system_prompt)
+
+class OllamaGemma2_9B(OllamaModel):
+    def __init__(self, *, system_prompt: str = None, **kwargs):
+        super().__init__(model_name="gemma2:9b", system_prompt=system_prompt)
+
+
 model_map = {
     "gemini-2.0-flash": Gemini,
     "deepseek-chat": DeepSeek,
@@ -242,8 +259,12 @@ model_map = {
     'ollama-qwen2.5-coder-32b': OllamaQwen25Coder32B,
     'ollama-qwen2.5-coder-7b': OllamaQwen25Coder7B,
     'ollama-gptoss-120b': OllamaGptOss120B,
-    'ollama-qwen3-8b': OllamaQwen3_8B,
 
+    'ollama-qwen3-1.7b': OllamaQwen3_17B,
+    'ollama-qwen3-8b': OllamaQwen3_8B,
+    'ollama-qwen32-8b': OllamaQwen3_32B,
+    'ollama-llama3.1-8b': OllamaLlama31_8B,
+    'ollama-gemma2-9b': OllamaGemma2_9B,
 }
 
 def generate(model_name: str, prompt: str, *, system_prompt: str = None, num_outputs: int = 1, multi_output_mode: bool = False):
