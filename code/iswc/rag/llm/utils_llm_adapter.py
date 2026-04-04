@@ -99,7 +99,9 @@ class UtilsLLM(BaseLLM):
                 with open(cache_file) as f:
                     data = json.load(f)
                 logger.debug("LLM cache hit  %s", os.path.basename(cache_file))
-                return LLMResponse(text=data["response"], input_tokens=0, output_tokens=0)
+                text = data["response"].strip()
+                if text:
+                    return LLMResponse(text=text, input_tokens=0, output_tokens=0)
             except Exception as exc:
                 logger.warning("Could not read LLM cache file %s (%s); re-querying.", cache_file, exc)
 
