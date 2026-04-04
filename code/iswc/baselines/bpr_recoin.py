@@ -25,6 +25,7 @@ Recoin — Relative Completeness in Wikidata [Balaraman et al., 2018]
 from __future__ import annotations
 
 import logging
+import os
 import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -55,9 +56,16 @@ class BaseRelationPredictor(ABC):
     """
     Common interface for all relation predictors.
 
-    Subclasses implement predict_relations(); the batch variant is provided
-    for free so callers never need to loop manually.
+    Subclasses implement predict_relations() and the three cache hooks
+    (_cache_filename, _build_checkpoint, _restore_checkpoint); all
+    persistence logic (save / load / _cache_path) lives here.
     """
+
+    # Declared here so type-checkers know all subclasses have them.
+    _dataset_name: Optional[str]
+    _cache_dir: Path
+
+    # ── Public API ───────────────────────────────────────────────────────────
 
     @abstractmethod
     def predict_relations(
@@ -77,6 +85,61 @@ class BaseRelationPredictor(ABC):
         top_k: Optional[int] = None,
     ) -> Dict[int, List[Tuple[int, float]]]:
         return {h: self.predict_relations(h, top_k) for h in heads}
+
+    # ── Cache hooks (implemented by subclasses) ──────────────────────────────
+
+    @abstractmethod
+    def _cache_filename(self) -> str:
+        """Bare filename (no directory) for this predictor's cache file."""
+
+    @abstractmethod
+    def _build_checkpoint(self) -> dict:
+        """Return everything needed to restore this predictor as a dict."""
+
+    @abstractmethod
+    def _restore_checkpoint(
+        self, checkpoint: dict, device: Optional[torch.device] = None
+    ) -> None:
+        """Restore predictor state from a checkpoint dict."""
+
+    # ── Persistence (shared implementation) ──────────────────────────────────
+
+    def _init_cache(
+        self,
+        dataset_name: Optional[str],
+        cache_dir: Optional[Path],
+    ) -> None:
+        """Call from subclass __init__ to initialise caching fields."""
+        self._dataset_name = dataset_name
+        self._cache_dir    = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
+
+    def _cache_path(self) -> Optional[Path]:
+        """Return the full cache file path, or None if caching is disabled."""
+        if not self._dataset_name:
+            return None
+        return self._cache_dir / self._cache_filename()
+
+    def save(self, path: str) -> None:
+        """Serialise this predictor to disk."""
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        torch.save(self._build_checkpoint(), path)
+        logger.info(f"{type(self).__name__} saved → {path}")
+
+    @classmethod
+    def load(
+        cls,
+        path: str,
+        device: Optional[torch.device] = None,
+    ) -> "BaseRelationPredictor":
+        """Load a predictor saved by :meth:`save`."""
+        device     = device or torch.device("cpu")
+        checkpoint = torch.load(path, map_location=device)
+        obj        = object.__new__(cls)
+        obj._dataset_name = None
+        obj._cache_dir    = DEFAULT_CACHE_DIR
+        obj._restore_checkpoint(checkpoint, device)
+        logger.info(f"{cls.__name__} loaded ← {path}")
+        return obj
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +168,7 @@ class _BPRModel(nn.Module):
     @torch.no_grad()
     def all_scores(self, head: int) -> np.ndarray:
         """Softmax-normalised scores over all relations for one entity."""
-        h = self.entity_emb.weight[head]                      # (d,)
+        h   = self.entity_emb.weight[head]                    # (d,)
         raw = (self.relation_emb.weight * h).sum(dim=-1)      # (R,)
         raw = raw - raw.max()
         exp = torch.exp(raw)
@@ -118,7 +181,8 @@ class BPRRelationPredictor(BaseRelationPredictor):
 
     Usage::
 
-        pred = BPRRelationPredictor(train_triples, num_entities, num_relations)
+        pred = BPRRelationPredictor(train_triples, num_entities, num_relations,
+                                    dataset_name="fb15k237")
         pred.train(num_epochs=100)
         rels = pred.predict_relations(head_id, top_k=10)
     """
@@ -135,12 +199,11 @@ class BPRRelationPredictor(BaseRelationPredictor):
         dataset_name: Optional[str] = None,
         cache_dir: Optional[Path] = None,
     ):
-        self.device        = device or torch.device("cpu")
-        self._embed_dim    = embed_dim
-        self._lr           = lr
-        self._l2           = l2
-        self._dataset_name = dataset_name
-        self._cache_dir    = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
+        self._init_cache(dataset_name, cache_dir)
+        self.device     = device or torch.device("cpu")
+        self._embed_dim = embed_dim
+        self._lr        = lr
+        self._l2        = l2
 
         self.model = _BPRModel(num_entities, num_relations, embed_dim).to(self.device)
         self._opt  = optim.Adam(self.model.parameters(), lr=lr, weight_decay=l2)
@@ -162,22 +225,13 @@ class BPRRelationPredictor(BaseRelationPredictor):
             f"from {len(self._entity_pos_rels)} entities."
         )
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+    # ── Cache hooks ──────────────────────────────────────────────────────────
 
-    def _cache_path(self) -> Optional[Path]:
-        """Return cache file path, or None when caching is disabled."""
-        if not self._dataset_name:
-            return None
-        fname = f"bpr_{self._dataset_name}_d{self._embed_dim}.pt"
-        return self._cache_dir / fname
+    def _cache_filename(self) -> str:
+        return f"bpr_{self._dataset_name}_d{self._embed_dim}.pt"
 
-    def save(self, path: str) -> None:
-        """Save trained model and supporting data to disk."""
-        import os
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        checkpoint = {
+    def _build_checkpoint(self) -> dict:
+        return {
             "model_state":     self.model.state_dict(),
             "num_entities":    self.model.entity_emb.num_embeddings,
             "num_relations":   self._num_relations,
@@ -185,46 +239,31 @@ class BPRRelationPredictor(BaseRelationPredictor):
             "entity_pos_rels": {k: list(v) for k, v in self._entity_pos_rels.items()},
             "hr_pairs":        self._hr_pairs,
         }
-        torch.save(checkpoint, path)
-        logger.info(f"BPRRelationPredictor saved → {path}")
 
-    @classmethod
-    def load(
-        cls,
-        path: str,
-        device: Optional[torch.device] = None,
-    ) -> "BPRRelationPredictor":
-        """Load a saved BPRRelationPredictor from disk."""
+    def _restore_checkpoint(
+        self, checkpoint: dict, device: Optional[torch.device] = None
+    ) -> None:
         device = device or torch.device("cpu")
-        checkpoint = torch.load(path, map_location=device)
-
-        obj = object.__new__(cls)
-        obj.device         = device
-        obj._num_relations = checkpoint["num_relations"]
-        obj._embed_dim     = checkpoint["embed_dim"]
-        obj._lr            = None
-        obj._l2            = None
-        obj._dataset_name  = None
-        obj._cache_dir     = DEFAULT_CACHE_DIR
-        obj._entity_pos_rels = {
+        self.device         = device
+        self._num_relations = checkpoint["num_relations"]
+        self._embed_dim     = checkpoint["embed_dim"]
+        self._lr            = None
+        self._l2            = None
+        self._entity_pos_rels = {
             int(k): set(v) for k, v in checkpoint["entity_pos_rels"].items()
         }
-        obj._hr_pairs = checkpoint["hr_pairs"]
+        self._hr_pairs = checkpoint["hr_pairs"]
 
-        obj.model = _BPRModel(
+        self.model = _BPRModel(
             checkpoint["num_entities"],
             checkpoint["num_relations"],
             checkpoint["embed_dim"],
         ).to(device)
-        obj.model.load_state_dict(checkpoint["model_state"])
-        obj.model.eval()
-        obj._opt = None  # optimizer not restored; re-create if fine-tuning needed
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.model.eval()
+        self._opt = None  # optimizer not restored; re-create if fine-tuning needed
 
-        logger.info(
-            f"BPRRelationPredictor loaded ← {path} "
-            f"({checkpoint['num_entities']} entities, {checkpoint['num_relations']} relations)."
-        )
-        return obj
+    # ── Training ─────────────────────────────────────────────────────────────
 
     def _sample_neg(self, head: int) -> int:
         pos = self._entity_pos_rels[head]
@@ -244,13 +283,11 @@ class BPRRelationPredictor(BaseRelationPredictor):
         If a cached checkpoint exists for this dataset/embed_dim, the
         trained weights are loaded from disk and training is skipped.
         """
-        # ── Cache check ───────────────────────────────────────────────────────
         cache_path = self._cache_path()
         if cache_path is not None and cache_path.exists():
             logger.info(f"Loading cached BPR model from {cache_path}")
-            loaded = BPRRelationPredictor.load(str(cache_path), device=self.device)
-            self.model.load_state_dict(loaded.model.state_dict())
-            self.model.eval()
+            checkpoint = torch.load(str(cache_path), map_location=self.device)
+            self._restore_checkpoint(checkpoint, self.device)
             return []
 
         losses = []
@@ -277,11 +314,9 @@ class BPRRelationPredictor(BaseRelationPredictor):
                 logger.info(f"  BPR epoch {epoch:3d}/{num_epochs} — loss {avg:.4f}")
         self.model.eval()
 
-        # ── Cache save ────────────────────────────────────────────────────────
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.save(str(cache_path))
-            logger.info(f"BPR model cached → {cache_path}")
 
         return losses
 
@@ -310,7 +345,8 @@ class RecoinRelationPredictor(BaseRelationPredictor):
 
     Usage::
 
-        pred = RecoinRelationPredictor(train_triples, entity_types)
+        pred = RecoinRelationPredictor(train_triples, entity_types,
+                                       dataset_name="fb15k237")
         rels = pred.predict_relations(head_id, top_k=10)
     """
 
@@ -328,14 +364,13 @@ class RecoinRelationPredictor(BaseRelationPredictor):
             dataset_name:  Used to key the cache file. Required for caching.
             cache_dir:     Override the default cache directory.
         """
-        self._dataset_name = dataset_name
-        self._cache_dir    = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
+        self._init_cache(dataset_name, cache_dir)
 
-        # ── Cache check ───────────────────────────────────────────────────────
         cache_path = self._cache_path()
         if cache_path is not None and cache_path.exists():
             logger.info(f"Loading cached Recoin model from {cache_path}")
-            self._load_state(cache_path)
+            checkpoint = torch.load(str(cache_path), map_location="cpu")
+            self._restore_checkpoint(checkpoint)
             return
 
         triples_np = train_triples.numpy() if isinstance(train_triples, Tensor) else np.array(train_triples)
@@ -364,55 +399,32 @@ class RecoinRelationPredictor(BaseRelationPredictor):
             f"{len(self._type_to_ents)} distinct types."
         )
 
-        # ── Cache save ────────────────────────────────────────────────────────
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.save(str(cache_path))
-            logger.info(f"Recoin model cached → {cache_path}")
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+    # ── Cache hooks ──────────────────────────────────────────────────────────
 
-    def _cache_path(self) -> Optional[Path]:
-        """Return cache file path, or None when caching is disabled."""
-        if not self._dataset_name:
-            return None
-        fname = f"recoin_{self._dataset_name}.pt"
-        return self._cache_dir / fname
+    def _cache_filename(self) -> str:
+        return f"recoin_{self._dataset_name}.pt"
 
-    def save(self, path: str) -> None:
-        """Save computed data structures to disk."""
-        import os
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        checkpoint = {
+    def _build_checkpoint(self) -> dict:
+        return {
             "entity_rels":     {k: list(v) for k, v in self._entity_rels.items()},
             "type_to_ents":    {k: list(v) for k, v in self._type_to_ents.items()},
             "ent_types":       {k: list(v) for k, v in self._ent_types.items()},
             "global_rel_prob": self._global_rel_prob,
         }
-        torch.save(checkpoint, path)
-        logger.info(f"RecoinRelationPredictor saved → {path}")
 
-    def _load_state(self, path: Path) -> None:
-        checkpoint              = torch.load(str(path), map_location="cpu")
-        self._entity_rels       = {int(k): set(v) for k, v in checkpoint["entity_rels"].items()}
-        self._type_to_ents      = {int(k): set(v) for k, v in checkpoint["type_to_ents"].items()}
-        self._ent_types         = {int(k): set(v) for k, v in checkpoint["ent_types"].items()}
-        self._global_rel_prob   = checkpoint["global_rel_prob"]
-        logger.info(
-            f"RecoinRelationPredictor loaded ← {path} "
-            f"({len(self._entity_rels)} entities, {len(self._type_to_ents)} types)."
-        )
+    def _restore_checkpoint(
+        self, checkpoint: dict, device: Optional[torch.device] = None
+    ) -> None:
+        self._entity_rels     = {int(k): set(v) for k, v in checkpoint["entity_rels"].items()}
+        self._type_to_ents    = {int(k): set(v) for k, v in checkpoint["type_to_ents"].items()}
+        self._ent_types       = {int(k): set(v) for k, v in checkpoint["ent_types"].items()}
+        self._global_rel_prob = checkpoint["global_rel_prob"]
 
-    @classmethod
-    def load(cls, path: str) -> "RecoinRelationPredictor":
-        """Load a saved RecoinRelationPredictor from disk."""
-        obj = object.__new__(cls)
-        obj._dataset_name = None
-        obj._cache_dir    = DEFAULT_CACHE_DIR
-        obj._load_state(Path(path))
-        return obj
+    # ── Inference ────────────────────────────────────────────────────────────
 
     def _similar_entities(self, head: int) -> Set[int]:
         """Entities sharing ≥1 type with head (excluding head itself)."""
@@ -436,6 +448,6 @@ class RecoinRelationPredictor(BaseRelationPredictor):
             for r in self._entity_rels.get(e, set()):
                 rel_cnt[r] += 1
 
-        n = len(similar)
+        n      = len(similar)
         ranked = sorted(((r, cnt / n) for r, cnt in rel_cnt.items()), key=lambda x: -x[1])
         return ranked[:top_k] if top_k is not None else ranked

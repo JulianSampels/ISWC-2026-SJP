@@ -121,6 +121,7 @@ class InstanceCompletionPipeline:
         Returns:
             Sorted list of (head, relation, tail, combined_score), descending.
         """
+        import ipdb; ipdb.set_trace()
         # --- Stage 1: relation prediction ---
         top_rels = self.relation_predictor.predict_relations(head, top_k=self.k_r)
         # top_rels: List[(rel_id, rel_score)]  — rel_scores in [0,1]

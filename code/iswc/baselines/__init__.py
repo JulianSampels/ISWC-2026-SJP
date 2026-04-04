@@ -1,5 +1,3 @@
-from .adapted import RelationFirstBaseline, IndependentCombinationBaseline, TailFirstBaseline
-
 from .bpr_recoin import (
     BaseRelationPredictor,
     BPRRelationPredictor,
