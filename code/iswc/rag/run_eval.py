@@ -38,7 +38,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-
+import torch
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+logging.getLogger("httpx").setLevel(logging.WARNING)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -92,15 +92,19 @@ def build_llm(args):
     return UtilsLLM(model_name=args.model)
 
 
-def build_native_pipeline(args, llm):
-    """Build the native (Wikidata 1-hop) RAG pipeline."""
-    from .retrieval.native_retriever import NativeKGRetriever
+def build_native_pipeline(args, llm, dataset_name: str = ""):
+    """Build the native (embedding cosine-similarity) RAG pipeline."""
+    from .retrieval.embedding_retriever import EmbeddingRetriever
     from .pipelines.native_rag import NativeRAGPipeline
 
-    retriever = NativeKGRetriever(
-        sparql_endpoint=args.sparql_endpoint,
-        timeout=args.sparql_timeout,
-        cache=True,
+    # Auto-construct cache dir: iswc_data/cache/rag/emb/<dataset>
+    cache_dir = Path("iswc_data/cache/rag/emb") / dataset_name
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    retriever = EmbeddingRetriever(
+        model_name=getattr(args, "embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
+        device=getattr(args, "device", None),
+        cache_dir=str(cache_dir),
     )
     return NativeRAGPipeline(retriever=retriever, llm=llm)
 
@@ -113,6 +117,9 @@ def build_sjp_pipeline(args, llm):
     """
     from .retrieval.fact_suggester import SJPFactSuggester
     from .pipelines.sjp_rag import SJPRAGPipeline
+
+    cache_dir = Path("iswc_data/cache/rag/sjp") / dataset_name
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Load vocabulary maps if provided
     entity_id_map = _load_id_map(args.entity_map)                    # str → int
@@ -192,7 +199,6 @@ def run_pipeline_on_dataset(pipeline, dataset_obj, args) -> List[dict]:
 
     n = min(args.max_samples, len(dataset_obj)) if args.max_samples else len(dataset_obj)
     results = []
-
     for i in tqdm(range(n), desc=f"{pipeline.name}", unit="q"):
         sample = dataset_obj[i]
         result: PipelineResult = pipeline.run(sample, top_k=args.top_k)
@@ -231,7 +237,6 @@ def evaluate_and_report(
         )
         for r in raw_results
     ]
-
     per_sample = evaluate_results(pr_list)
     agg = aggregate_metrics(per_sample)
 
@@ -254,14 +259,14 @@ def main(argv=None):
     )
 
     # --- Dataset ---
-    parser.add_argument("--dataset", choices=["webqsp", "cwq", "both"], default="both",
+    parser.add_argument("--dataset", choices=["webqsp", "cwq", "both"], default="webqsp",
                         help="Dataset to evaluate on.")
     parser.add_argument("--split", choices=["train", "val", "test"], default="test",
                         help="Dataset split.")
-    parser.add_argument("--webqsp-path", default=None,
+    parser.add_argument("--webqsp-path", default='./iswc_data/standard/webqsp',
                         help="Local path to WebQSP JSON or HF cache dir. "
                              "Downloads from Hub if omitted.")
-    parser.add_argument("--cwq-path", default=None,
+    parser.add_argument("--cwq-path", default='./iswc_data/standard/cwq',
                         help="Local path to CWQ JSON or HF cache dir. "
                              "Downloads from Hub if omitted.")
     parser.add_argument("--max-samples", type=int, default=None,
@@ -272,17 +277,25 @@ def main(argv=None):
                         help="Which pipeline(s) to run.")
 
     # --- LLM ---
-    parser.add_argument("--model", default="deepseek-chat",
+    parser.add_argument("--model", default="ollama-qwen3-8b",
                         help="Model name (must be a key in utils_llm.model_map, e.g. "
-                             "deepseek-chat, gemini-2.0-flash, ollama-deepseek-v3).")
+                             "ollama-llama3.1-8b,ollama-qwen3-8b,ollama-qwen3-32b,ollama-qwen3-1.7b,ollama-gemma2-9b).")
 
     # --- Retrieval ---
     parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of triples to retrieve per entity.")
+                        help="Number of triples to retrieve per entity, also budget-constrained/aware.")
     parser.add_argument("--sparql-endpoint", default=_WIKIDATA_SPARQL,
                         help="SPARQL endpoint URL for native retriever.")
     parser.add_argument("--sparql-timeout", type=int, default=10,
                         help="SPARQL query timeout in seconds.")
+    parser.add_argument("--embedding-model",
+                        default="sentence-transformers/all-MiniLM-L6-v2",
+                        help="Sentence-transformers model for native RAG embedding retrieval.")
+    parser.add_argument("--embedding-cache-dir",
+                        default=None,
+                        help="Override the default embedding cache directory. "
+                             "Default: iswc_data/cache/rag/emb/<dataset>. "
+                             "Each graph subgraph is cached as graph_<hash>.pkl.")
 
     # --- SJP model (optional; enables real model instead of placeholder) ---
     parser.add_argument("--sjp-checkpoint", default=None,
@@ -307,6 +320,8 @@ def main(argv=None):
                         help="Directory to write prediction and metric JSON files.")
 
     args = parser.parse_args(argv)
+
+    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Datasets to evaluate
     datasets_to_run = (
@@ -335,11 +350,12 @@ def main(argv=None):
         for pipe_name in pipelines_to_run:
             logger.info("── Pipeline: %s ──", pipe_name)
             pipeline = (
-                build_native_pipeline(args, llm)
+                build_native_pipeline(args, llm, dataset_name=ds_name)
                 if pipe_name == "native"
                 else build_sjp_pipeline(args, llm)
             )
             raw = run_pipeline_on_dataset(pipeline, dataset_obj, args)
+            import ipdb; ipdb.set_trace()
             agg = evaluate_and_report(pipe_name, raw, args.output_dir, ds_name, args.split)
             agg_by_pipeline[pipe_name] = agg
             logger.info("%s  →  Hits@1=%.3f  F1=%.3f  EM=%.3f",

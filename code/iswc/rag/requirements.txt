@@ -10,9 +10,12 @@ datasets>=2.18.0            # HuggingFace datasets (WebQSP, CWQ via Hub)
 
 # Retrieval
 rank-bm25>=0.2.2            # BM25 for native text retrieval
+sentence-transformers>=2.6.0
 requests>=2.31.0            # Wikidata SPARQL queries
 
 # Utilities
 tqdm>=4.66.0
 pandas>=2.0.0
 numpy>=1.24.0
+openai
+ipdb

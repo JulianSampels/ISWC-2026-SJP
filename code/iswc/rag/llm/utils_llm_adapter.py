@@ -18,10 +18,14 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a factual question-answering assistant. "
-    "Answer the question using ONLY the provided context. "
-    "If the context does not contain enough information to answer, reply with 'unknown'. "
-    "Output the answer as a short phrase or entity name only — no explanations, "
-    "no punctuation other than what is part of the name."
+    "Answer the question using ONLY the information in the provided context. "
+    "Rules:\n"
+    "1. If there is one answer, output it as a single short phrase or entity name.\n"
+    "2. If there are multiple answers, output each one separated by a comma "
+    "(e.g. 'answer one, answer two, answer three').\n"
+    "3. Do not output explanations, sentences, or reasoning — answers only.\n"
+    "4. Do not add punctuation that is not part of the answer itself.\n"
+    "5. If the context does not contain enough information to answer, reply with 'unknown'."
 )
 
 

@@ -99,6 +99,7 @@ class WebQSPDataset(QADataset):
             topic_entities=topic_entities,
             answers=answers,
             answer_entities=answer_entities,
+            graph=row.get("graph", []),
         )
 
     def _load_original_json(self, path: str) -> List[QASample]:

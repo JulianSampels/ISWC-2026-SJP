@@ -27,6 +27,7 @@ class QASample:
     topic_entities: List[str]
     answers: List[str]
     answer_entities: List[str] = field(default_factory=list)
+    graph: List[List[str]] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
 
     def primary_entity(self) -> Optional[str]:

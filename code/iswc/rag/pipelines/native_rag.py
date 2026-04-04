@@ -1,41 +1,39 @@
 """
-Native RAG pipeline — baseline.
+Native RAG pipeline — embedding-based cosine similarity baseline.
 
-Strategy: given the topic entity, retrieve its direct 1-hop neighbours
-from Wikidata (no learned scoring), then prompt the LLM with those triples
-as structured context.
+Strategy: given the per-sample KG subgraph (provided by the dataset),
+encode the question and each triple as dense vectors and return the
+top-k triples by cosine similarity to the question.
 
-This is the "vanilla KG-RAG" baseline: same LLM, same number of triples,
-but retrieval is done by simple graph traversal rather than the SJP
-instance-completion model.
+This is the correct "naive RAG" baseline:
+  - Uses the graph that comes WITH the dataset (rmanluo/RoG-webqsp graph field).
+  - No live SPARQL queries; no learned KG-specific scoring.
+  - Retrieval is purely semantic similarity via sentence-transformers.
 
 Why this baseline?
-  - It isolates the contribution of the SJP scoring / ranking from the
-    gain of simply having KG triples in the prompt.
   - If SJP RAG outperforms native RAG, the improvement is attributable
-    to better retrieval (higher-quality, more relevant triples), not just
-    to the presence of structured context.
+    to the SJP learned scoring, not just to the presence of structured context.
 """
 import logging
 
 from ..datasets.base import QASample
 from ..llm.base import BaseLLM
-from ..retrieval.base import BaseRetriever
+from ..retrieval.embedding_retriever import EmbeddingRetriever
 from .base import BaseRAGPipeline, PipelineResult
 
 logger = logging.getLogger(__name__)
 
 
 class NativeRAGPipeline(BaseRAGPipeline):
-    """1-hop KG-neighbour RAG baseline.
+    """Embedding-based KG-RAG baseline.
 
     Args:
-        retriever: A BaseRetriever that fetches triples for an entity.
-                   Typically NativeKGRetriever (Wikidata 1-hop).
-        llm:       LLM reader (e.g. ClaudeLLM).
+        retriever: An EmbeddingRetriever that scores triples by cosine
+                   similarity to the question.
+        llm:       LLM reader.
     """
 
-    def __init__(self, retriever: BaseRetriever, llm: BaseLLM) -> None:
+    def __init__(self, retriever: EmbeddingRetriever, llm: BaseLLM) -> None:
         self.retriever = retriever
         self.llm = llm
 
@@ -44,30 +42,25 @@ class NativeRAGPipeline(BaseRAGPipeline):
         return "native_rag"
 
     def run(self, sample: QASample, top_k: int = 10) -> PipelineResult:
-        """Retrieve 1-hop Wikidata triples, then ask the LLM.
+        """Retrieve top-k triples by cosine similarity, then ask the LLM.
 
         Args:
-            sample: KGQA question with linked topic entities.
-            top_k:  Number of triples to retrieve per entity.
+            sample: KGQA question with a per-sample KG subgraph in sample.graph.
+            top_k:  Number of triples to retrieve.
 
         Returns:
             PipelineResult with LLM-predicted answers.
         """
-        entity = sample.primary_entity()
-        if entity is None:
-            logger.warning("[%s] No topic entity for question '%s'", self.name, sample.question_id)
+        if not sample.graph:
+            logger.warning("[%s] No graph triples for question '%s'", self.name, sample.question_id)
 
-        # Retrieve triples (empty list if entity is None or retrieval fails)
-        triples = self.retriever.retrieve(entity, top_k=top_k) if entity else []
+        triples = self.retriever.retrieve(sample.question, sample.graph, top_k=top_k)
 
-        # Build context and prompt
         context = self._format_triples_as_context(triples)
         prompt = self._build_prompt(context, sample.question)
 
-        # Query LLM
         response = self.llm.generate(prompt)
         predicted = self.llm.extract_answers(response.text)
-
         return PipelineResult(
             question_id=sample.question_id,
             question=sample.question,

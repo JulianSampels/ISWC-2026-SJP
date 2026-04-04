@@ -226,6 +226,11 @@ class OllamaGptOss120B(OllamaModel):
         super().__init__(model_name="gpt-oss:120b", system_prompt=system_prompt)
 
 
+class OllamaQwen3_8B(OllamaModel):
+    def __init__(self, *, system_prompt: str = None, **kwargs):
+        super().__init__(model_name="qwen3:8b", system_prompt=system_prompt)
+
+
 model_map = {
     "gemini-2.0-flash": Gemini,
     "deepseek-chat": DeepSeek,
@@ -237,6 +242,8 @@ model_map = {
     'ollama-qwen2.5-coder-32b': OllamaQwen25Coder32B,
     'ollama-qwen2.5-coder-7b': OllamaQwen25Coder7B,
     'ollama-gptoss-120b': OllamaGptOss120B,
+    'ollama-qwen3-8b': OllamaQwen3_8B,
+
 }
 
 def generate(model_name: str, prompt: str, *, system_prompt: str = None, num_outputs: int = 1, multi_output_mode: bool = False):
