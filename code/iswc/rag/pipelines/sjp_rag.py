@@ -52,7 +52,7 @@ class SJPRAGPipeline(BaseRAGPipeline):
     def name(self) -> str:
         return "sjp_rag"
 
-    def run(self, sample: QASample, top_k: int = 10) -> PipelineResult:
+    def run(self, sample: QASample, budget: int = 10) -> PipelineResult:
         """Retrieve SJP-scored facts, then ask the LLM.
 
         The SJP model is given the topic entity h and returns candidate triples
@@ -65,7 +65,7 @@ class SJPRAGPipeline(BaseRAGPipeline):
 
         Args:
             sample: KGQA question with linked topic entities.
-            top_k:  Number of SJP-ranked triples to use as context.
+            budget:  Number of SJP-ranked triples to use as context.
 
         Returns:
             PipelineResult with LLM-predicted answers.
@@ -74,15 +74,15 @@ class SJPRAGPipeline(BaseRAGPipeline):
         all_triples = []
         seen = set()
         for entity in sample.topic_entities:
-            for triple in self.retriever.retrieve(entity, top_k=top_k):
+            for triple in self.retriever.retrieve(entity, budget=budget):
                 key = (triple.head, triple.relation, triple.tail)
                 if key not in seen:
                     seen.add(key)
                     all_triples.append(triple)
 
-        # Sort merged triples by score descending, clip to top_k
+        # Sort merged triples by score descending, clip to budget
         all_triples.sort(key=lambda t: t.score if t.score is not None else 0.0, reverse=True)
-        top_triples = all_triples[:top_k]
+        top_triples = all_triples[:budget]
 
         if not top_triples:
             logger.warning(

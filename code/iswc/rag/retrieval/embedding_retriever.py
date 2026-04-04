@@ -90,14 +90,14 @@ class EmbeddingRetriever:
         self,
         question: str,
         graph: List[List[str]],
-        top_k: int = 10,
+        budget: int = 10,
     ) -> List[Triple]:
         """Return the top-k most relevant triples for *question*.
 
         Args:
             question: Natural language question string.
             graph:    List of [head, relation, tail] from the dataset subgraph.
-            top_k:    Maximum number of triples to return.
+            budget:    Maximum number of triples to return.
 
         Returns:
             List of Triple objects sorted by cosine similarity descending.
@@ -119,7 +119,7 @@ class EmbeddingRetriever:
         for triple, score in zip(triples, scores):
             triple.score = float(score)
 
-        return sorted(triples, key=lambda t: t.score or 0.0, reverse=True)[:top_k]
+        return sorted(triples, key=lambda t: t.score or 0.0, reverse=True)[:budget]
 
     # ------------------------------------------------------------------
     # Scoring backends

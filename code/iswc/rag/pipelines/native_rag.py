@@ -41,12 +41,12 @@ class NativeRAGPipeline(BaseRAGPipeline):
     def name(self) -> str:
         return "native_rag"
 
-    def run(self, sample: QASample, top_k: int = 10) -> PipelineResult:
+    def run(self, sample: QASample, budget: int = 10) -> PipelineResult:
         """Retrieve top-k triples by cosine similarity, then ask the LLM.
 
         Args:
             sample: KGQA question with a per-sample KG subgraph in sample.graph.
-            top_k:  Number of triples to retrieve.
+            budget:  Number of triples to retrieve.
 
         Returns:
             PipelineResult with LLM-predicted answers.
@@ -54,7 +54,7 @@ class NativeRAGPipeline(BaseRAGPipeline):
         if not sample.graph:
             logger.warning("[%s] No graph triples for question '%s'", self.name, sample.question_id)
 
-        triples = self.retriever.retrieve(sample.question, sample.graph, top_k=top_k)
+        triples = self.retriever.retrieve(sample.question, sample.graph, budget=budget)
 
         context = self._format_triples_as_context(triples)
         prompt = self._build_prompt(context, sample.question)

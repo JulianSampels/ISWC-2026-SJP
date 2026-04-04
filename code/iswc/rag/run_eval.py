@@ -35,6 +35,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -86,10 +87,21 @@ def _save_json(data, path: str) -> None:
 # Pipeline builders
 # ---------------------------------------------------------------------------
 
-def build_llm(args):
-    """Construct the shared LLM from CLI args."""
+def build_llm(args, dataset_name: str = "", pipeline_name: str = ""):
+    """Construct the shared LLM from CLI args.
+
+    Cache dir: iswc_data/cache/rag/llm/<model>/<dataset>/<pipeline>/budget<N>
+    Each unique prompt is saved as <prompt_hash>.json inside that directory.
+    """
     from .llm.utils_llm_adapter import UtilsLLM
-    return UtilsLLM(model_name=args.model)
+
+    model_slug = re.sub(r"[^a-zA-Z0-9_-]", "_", args.model)
+    cache_dir = os.path.join(
+        "iswc_data", "cache", "rag", "llm",
+        model_slug, dataset_name, pipeline_name, f"budget{args.budget}",
+    )
+
+    return UtilsLLM(model_name=args.model, cache_dir=cache_dir)
 
 
 def build_native_pipeline(args, llm, dataset_name: str = ""):
@@ -182,7 +194,7 @@ def _load_sjp_model(args):
         temperature=args.candidates_temperature,
         alpha=args.candidates_alpha,
         beta=args.candidates_beta,
-        per_group_cap=args.top_k,
+        per_group_cap=args.budget,
     )
 
     relation_maps = dataset.relation_maps
@@ -201,7 +213,7 @@ def run_pipeline_on_dataset(pipeline, dataset_obj, args) -> List[dict]:
     results = []
     for i in tqdm(range(n), desc=f"{pipeline.name}", unit="q"):
         sample = dataset_obj[i]
-        result: PipelineResult = pipeline.run(sample, top_k=args.top_k)
+        result: PipelineResult = pipeline.run(sample, budget=args.budget)
         results.append({
             "question_id":       result.question_id,
             "question":          result.question,
@@ -221,6 +233,7 @@ def evaluate_and_report(
     output_dir: str,
     dataset_name: str,
     split: str,
+    budget: int = 10,
 ) -> Dict[str, float]:
     """Compute metrics, save files, return aggregate dict."""
     from .pipelines.base import PipelineResult
@@ -240,7 +253,7 @@ def evaluate_and_report(
     per_sample = evaluate_results(pr_list)
     agg = aggregate_metrics(per_sample)
 
-    prefix = f"{dataset_name}_{pipeline_name}_{split}"
+    prefix = f"{dataset_name}_{pipeline_name}_{split}_budget{budget}"
     _save_json(raw_results, os.path.join(output_dir, f"{prefix}_predictions.json"))
     _save_json({"per_sample": per_sample, "aggregate": agg},
                os.path.join(output_dir, f"{prefix}_metrics.json"))
@@ -282,8 +295,9 @@ def main(argv=None):
                              "ollama-llama3.1-8b,ollama-qwen3-8b,ollama-qwen3-32b,ollama-qwen3-1.7b,ollama-gemma2-9b).")
 
     # --- Retrieval ---
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of triples to retrieve per entity, also budget-constrained/aware.")
+    parser.add_argument("--budget", type=int, default=10,
+                        help="Number of triples to retrieve as context (budget). "
+                             "Results are saved per-budget to support budget sweep experiments.")
     parser.add_argument("--sparql-endpoint", default=_WIKIDATA_SPARQL,
                         help="SPARQL endpoint URL for native retriever.")
     parser.add_argument("--sparql-timeout", type=int, default=10,
@@ -332,9 +346,6 @@ def main(argv=None):
         ["native", "sjp"] if args.pipeline == "both" else [args.pipeline]
     )
 
-    # Build shared LLM (one instance, shared across all pipelines)
-    llm = build_llm(args)
-
     from .evaluation.metrics import format_metrics_table
 
     for ds_name in datasets_to_run:
@@ -349,14 +360,15 @@ def main(argv=None):
 
         for pipe_name in pipelines_to_run:
             logger.info("── Pipeline: %s ──", pipe_name)
+            # Each (dataset, pipeline) pair gets its own LLM cache directory
+            llm = build_llm(args, dataset_name=ds_name, pipeline_name=pipe_name)
             pipeline = (
                 build_native_pipeline(args, llm, dataset_name=ds_name)
                 if pipe_name == "native"
                 else build_sjp_pipeline(args, llm)
             )
             raw = run_pipeline_on_dataset(pipeline, dataset_obj, args)
-            import ipdb; ipdb.set_trace()
-            agg = evaluate_and_report(pipe_name, raw, args.output_dir, ds_name, args.split)
+            agg = evaluate_and_report(pipe_name, raw, args.output_dir, ds_name, args.split, budget=args.budget)
             agg_by_pipeline[pipe_name] = agg
             logger.info("%s  →  Hits@1=%.3f  F1=%.3f  EM=%.3f",
                         pipe_name, agg.get("hits@1", 0), agg.get("f1", 0),
@@ -370,7 +382,7 @@ def main(argv=None):
         print(table)
 
         # Save table
-        table_path = os.path.join(args.output_dir, f"comparison_{ds_name}_{args.split}.txt")
+        table_path = os.path.join(args.output_dir, f"comparison_{ds_name}_{args.split}_budget{args.budget}.txt")
         os.makedirs(args.output_dir, exist_ok=True)
         with open(table_path, "w") as f:
             f.write(table)

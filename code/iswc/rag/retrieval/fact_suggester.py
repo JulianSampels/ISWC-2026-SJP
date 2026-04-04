@@ -106,31 +106,31 @@ class SJPFactSuggester(BaseRetriever):
     # Public API
     # ------------------------------------------------------------------
 
-    def retrieve(self, entity_id: str, top_k: int = 10) -> List[Triple]:
-        """Return top-k SJP-scored triples for *entity_id*.
+    def retrieve(self, entity_id: str, budget: int = 10) -> List[Triple]:
+        """Return budget-many SJP-scored triples for *entity_id*.
 
         Args:
             entity_id: String entity ID (e.g. Freebase MID "m.06w2sn5").
-            top_k:     Maximum number of triples to return.
+            budget:    Maximum number of triples to return.
 
         Returns:
             List of Triple objects sorted by SJP score descending.
             Returns [] in placeholder mode or if entity_id is not in vocab.
         """
         if self._placeholder_mode:
-            return self._placeholder_retrieve(entity_id, top_k)
-        return self._model_retrieve(entity_id, top_k)
+            return self._placeholder_retrieve(entity_id, budget)
+        return self._model_retrieve(entity_id, budget)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _placeholder_retrieve(self, entity_id: str, top_k: int) -> List[Triple]:
+    def _placeholder_retrieve(self, entity_id: str, budget: int) -> List[Triple]:
         """Return empty list and log a debug message."""
-        logger.debug("Placeholder retrieve for entity '%s' (top_k=%d)", entity_id, top_k)
+        logger.debug("Placeholder retrieve for entity '%s' (budget=%d)", entity_id, budget)
         return []
 
-    def _model_retrieve(self, entity_id: str, top_k: int) -> List[Triple]:
+    def _model_retrieve(self, entity_id: str, budget: int) -> List[Triple]:
         """Call suggest_facts_for_entity and translate back to string triples."""
         # Late import to avoid requiring SJP dependencies when in placeholder mode
         try:
@@ -153,7 +153,7 @@ class SJPFactSuggester(BaseRetriever):
                 dataset=self.dataset,
                 candidate_generator=self.candidate_generator,
                 relation_maps=self.relation_maps,
-                top_k=top_k,
+                top_k=budget,  # external API still uses top_k
                 device=self.device,
             )
         except ValueError as exc:

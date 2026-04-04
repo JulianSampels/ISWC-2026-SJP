@@ -21,7 +21,7 @@ class LLMConfig:
 @dataclass
 class RetrieverConfig:
     """Shared retrieval settings."""
-    top_k: int = 10                        # facts / passages to retrieve
+    budget: int = 10                       # context budget (facts to retrieve)
     # SJP-specific
     sjp_checkpoint: Optional[str] = None  # path to trained SJP model checkpoint
     sjp_dataset_split: Literal["train", "val", "test"] = "test"

@@ -44,12 +44,12 @@ class BaseRAGPipeline(ABC):
         """Short identifier used in result tables and filenames."""
 
     @abstractmethod
-    def run(self, sample: QASample, top_k: int = 10) -> PipelineResult:
+    def run(self, sample: QASample, budget: int = 10) -> PipelineResult:
         """Process a single QASample and return predictions.
 
         Args:
             sample: A question-answer sample from a KGQA dataset.
-            top_k:  Number of triples / passages to retrieve.
+            budget:  Number of triples / passages to retrieve.
 
         Returns:
             PipelineResult with predicted answers and supporting evidence.

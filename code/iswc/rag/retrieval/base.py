@@ -35,17 +35,17 @@ class BaseRetriever(ABC):
     """Abstract retriever interface."""
 
     @abstractmethod
-    def retrieve(self, entity_id: str, top_k: int = 10) -> List[Triple]:
-        """Return up to *top_k* triples for *entity_id*, ranked by score desc.
+    def retrieve(self, entity_id: str, budget: int = 10) -> List[Triple]:
+        """Return up to *budget* triples for *entity_id*, ranked by score desc.
 
         Args:
             entity_id: The head entity for which to retrieve facts.
                        Format depends on the knowledge graph (e.g. Freebase MID
                        like "m.06w2sn5", Wikidata QID like "Q2831", or an
                        integer ID from the SJP vocabulary).
-            top_k:     Maximum number of triples to return.
+            budget:     Maximum number of triples to return.
 
         Returns:
             List of Triple objects, sorted by score descending.
-            May be shorter than top_k if fewer triples are available.
+            May be shorter than budget if fewer triples are available.
         """
