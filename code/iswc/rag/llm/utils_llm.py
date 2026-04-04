@@ -17,7 +17,7 @@ RESP_DELIMITER = '====LLM4JMH===='
 
 class BaseModel:
     max_tokens = 4096
-
+    max_new_tokens = 4096
     model_name = None
     model = None
 
@@ -108,7 +108,7 @@ class DeepSeek(BaseModel):
             messages=messages,
             # deterministic or dynamic responses
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            max_tokens=self.max_new_tokens,
             top_p=self.top_p,
             n=1,
         )
@@ -134,7 +134,7 @@ class Gemini(BaseModel):
             messages.append({"role": "model", "parts": [{"text": examples[i+1]}]})
 
         messages.append({"role": "user", "parts": [{"text": message}]})
-        response = self.model.generate_content(messages, generation_config={"temperature": self.temperature, "top_p": self.top_p, "max_output_tokens": self.max_tokens, "candidate_count": 1}, request_options={"timeout": 120})
+        response = self.model.generate_content(messages, generation_config={"temperature": self.temperature, "top_p": self.top_p, "max_output_tokens": self.max_new_tokens, "candidate_count": 1}, request_options={"timeout": 120})
         return response.text
 
 
@@ -189,7 +189,7 @@ class OllamaModel(BaseModel):
             messages=messages,
             # deterministic or dynamic responses
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            max_tokens=self.max_new_tokens,
             top_p=self.top_p,
             n=1,
         )

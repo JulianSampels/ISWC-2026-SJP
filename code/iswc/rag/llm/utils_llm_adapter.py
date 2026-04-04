@@ -93,7 +93,9 @@ class UtilsLLM(BaseLLM):
             LLMResponse with generated text.
         """
         # --- cache lookup ---
+        prompt = f'{self.system_prompt}\n\n{prompt}'
         cache_file = self._cache_path(prompt)
+
         if cache_file is not None and os.path.exists(cache_file):
             try:
                 with open(cache_file) as f:
@@ -109,7 +111,7 @@ class UtilsLLM(BaseLLM):
         ok, text = _utils_llm.generate(
             self.model_name,
             prompt,
-            system_prompt=self.system_prompt,
+            # system_prompt=self.system_prompt,
         )
         if not ok:
             logger.error("[%s] generation failed: %s", self.model_name, text)

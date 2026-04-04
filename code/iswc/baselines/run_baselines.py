@@ -181,6 +181,8 @@ def build_relation_predictor(
     bpr_epochs: int,
     bpr_embed_dim: int,
     device: torch.device,
+    dataset_name: str,
+    cache_dir: Path,
     entity_types: Optional[Dict[int, List[int]]] = None,
 ):
     """Train and return a relation predictor by name (bpr / recoin)."""
@@ -192,6 +194,8 @@ def build_relation_predictor(
             num_relations=num_relations,
             embed_dim=bpr_embed_dim,
             device=device,
+            dataset_name=dataset_name,
+            cache_dir=cache_dir,
         )
         pred.train(num_epochs=bpr_epochs, verbose=False)
         return pred
@@ -205,6 +209,8 @@ def build_relation_predictor(
         logger.info("Building Recoin relation predictor …")
         return RecoinRelationPredictor(
             train_triples=train_triples,
+            dataset_name=dataset_name,
+            cache_dir=cache_dir,
             entity_types=entity_types or {},
         )
 
@@ -227,9 +233,9 @@ def parse_args() -> argparse.Namespace:
                    help="Relation predictors to evaluate.")
     p.add_argument("--kgc-models",      nargs="+", default=["transe", "transh"],
                    help="PyKEEN KGC model names to evaluate.")
-    p.add_argument("--k-r",             type=int, default=10,
+    p.add_argument("--k-r",             type=int, default=100,
                    help="Top-k relations per head entity (Stage 1).")
-    p.add_argument("--k-t",             type=int, default=50,
+    p.add_argument("--k-t",             type=int, default=5000,
                    help="Top-k tails per (head, relation) query (Stage 2).")
     p.add_argument("--alpha",           type=float, default=0.5,
                    help="Score mixing weight: alpha*rel + (1-alpha)*tail.")
@@ -256,7 +262,8 @@ def main() -> None:
     device = torch.device(args.device) if args.device else \
              torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bpr_epochs = args.bpr_epochs or args.epochs
-
+    dataset_name = args.dataset
+    model_cache_dir = Path('iswc_data/cache/models')
     logger.info(f"Device: {device}")
     logger.info(f"Dataset: {args.dataset}")
     logger.info(f"Relation predictors: {args.rel_predictors}")
@@ -321,6 +328,8 @@ def main() -> None:
             bpr_embed_dim=args.embed_dim,
             device=device,
             entity_types=entity_types,
+            dataset_name=dataset_name,
+            cache_dir=model_cache_dir,
         )
         logger.info(f"  Relation predictor ready in {time.time()-t0:.1f}s")
 
@@ -333,6 +342,7 @@ def main() -> None:
             embed_dim=args.embed_dim,
             device=device,
             dataset_name=args.dataset,
+            cache_dir=model_cache_dir,
         ).train(num_epochs=args.epochs)
         logger.info(f"  KGC model ready in {time.time()-t0:.1f}s")
 

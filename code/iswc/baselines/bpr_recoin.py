@@ -31,6 +31,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -291,7 +292,7 @@ class BPRRelationPredictor(BaseRelationPredictor):
             return []
 
         losses = []
-        for epoch in range(1, num_epochs + 1):
+        for epoch in tqdm(range(1, num_epochs + 1)):
             self.model.train()
             random.shuffle(self._hr_pairs)
             ep_loss, n = 0.0, 0

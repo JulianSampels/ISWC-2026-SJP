@@ -90,7 +90,7 @@ class EmbeddingRetriever:
         self,
         question: str,
         graph: List[List[str]],
-        budget: int = 10,
+        budget: Optional[int] = None,
     ) -> List[Triple]:
         """Return the top-k most relevant triples for *question*.
 
