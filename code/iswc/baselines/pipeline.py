@@ -53,16 +53,45 @@ Usage
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .bpr_recoin import BaseRelationPredictor
 from .kgc_tails import PyKEENWrapper
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Module-level worker state for Stage-1 multiprocessing
+# ---------------------------------------------------------------------------
+# These globals are set once per worker process via Pool(initializer=…) so
+# the predictor object is pickled/transferred only at worker startup, not
+# for every individual task.
+
+_worker_predictor: Optional[BaseRelationPredictor] = None
+_worker_k_r: int = 0
+
+
+def _init_stage1_worker(predictor: BaseRelationPredictor, k_r: int) -> None:
+    """Pool initializer: store the predictor in each worker process."""
+    global _worker_predictor, _worker_k_r
+    _worker_predictor = predictor
+    _worker_k_r = k_r
+
+
+def _stage1_worker(h: int) -> Tuple[int, List[Tuple[int, float]]]:
+    """Worker task: predict relations for one head entity."""
+    return h, _worker_predictor.predict_relations(h, top_k=_worker_k_r)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
 
 class InstanceCompletionPipeline:
     """
@@ -156,20 +185,154 @@ class InstanceCompletionPipeline:
 
         return all_candidates
 
+    def _run_stage1(
+        self,
+        heads: List[int],
+        num_workers: int,
+    ) -> Dict[int, List[Tuple[int, float]]]:
+        """
+        Run Stage 1 (relation prediction) for all heads.
+
+        With num_workers > 0, a multiprocessing Pool distributes the work
+        across CPU cores.  The predictor is transferred to each worker once
+        via the Pool initializer, so per-task overhead is just one int (the
+        head ID).
+
+        Note: num_workers > 0 requires the relation_predictor to be CPU-based.
+        Forking a process that holds a live CUDA context is unsafe; if BPR is
+        on GPU, set num_workers=0 (the default).
+        """
+        if num_workers > 0:
+            ctx = mp.get_context("fork")      # fork: fast, zero-copy on Linux
+            with ctx.Pool(
+                processes=num_workers,
+                initializer=_init_stage1_worker,
+                initargs=(self.relation_predictor, self.k_r),
+            ) as pool:
+                pairs = pool.map(_stage1_worker, heads)
+            return dict(pairs)
+
+        return {
+            h: self.relation_predictor.predict_relations(h, top_k=self.k_r)
+            for h in heads
+        }
+
     def generate_candidates_batch(
         self,
         heads: List[int],
         max_candidates: Optional[int] = None,
+        chunk_size: int = 512,
+        num_workers: int = 0,
     ) -> Dict[int, List[Tuple[int, int, int, float]]]:
         """
-        Generate candidates for a list of head entities.
+        Batched candidate generation with parallel Stage 1 and chunked GPU Stage 2.
 
-        Returns:
-            Dict mapping each head entity id to its sorted candidate list.
+        Stage 1 — relation prediction (CPU):
+            Optionally parallelised across `num_workers` processes via
+            multiprocessing.Pool.  Each worker receives the predictor once at
+            startup (via the Pool initializer) and then only receives head IDs,
+            keeping inter-process communication minimal.
+
+        Stage 2 — KGC tail scoring (GPU):
+            All (h, r) pairs from the entire batch are packed into a single
+            (N, 2) tensor and fed to model.score_t() in chunks of `chunk_size`
+            rows.  TopK, softmax-normalisation, and score combination are done
+            on-GPU before a single .cpu() transfer.
+
+        Parameters
+        ----------
+        heads : List[int]
+            Head entity IDs to generate candidates for.
+        max_candidates : int, optional
+            Maximum candidates kept per head after ranking.
+        chunk_size : int
+            (h, r) pairs per score_t call.  Peak GPU mem ≈ chunk × entities × 4 B.
+            Default 512 uses ~30 MB for FB15k-237 (14 k entities).
+        num_workers : int
+            CPU processes for Stage 1.  0 = sequential (safe with GPU predictors).
+            Set > 0 only when the relation_predictor is CPU-based.
+
+        Returns
+        -------
+        Dict mapping each head entity id to its sorted candidate list.
         """
+        if not heads:
+            return {}
+
+        # ── Stage 1: relation prediction ─────────────────────────────────────
+        stage1: Dict[int, List[Tuple[int, float]]] = self._run_stage1(heads, num_workers)
+
+        # Pack all (h, r) pairs in input order and record per-head spans.
+        hr_rows: List[Tuple[int, int]] = []
+        rel_scores_list: List[float]   = []
+        head_spans: List[Tuple[int, int]] = []    # parallel to heads
+
+        for h in heads:
+            top_rels = stage1.get(h, [])
+            start = len(hr_rows)
+            for rel_id, rel_score in top_rels:
+                hr_rows.append((h, rel_id))
+                rel_scores_list.append(float(rel_score))
+            head_spans.append((start, len(hr_rows)))
+
+        if not hr_rows:
+            return {h: [] for h in heads}
+
+        # ── Stage 2: chunked GPU scoring ─────────────────────────────────────
+        N   = len(hr_rows)
+        k_t = min(self.k_t, self.kgc_model.num_entities)
+        dev = self.device
+
+        hr_tensor    = torch.tensor(hr_rows,         dtype=torch.long,    device=dev)  # (N, 2)
+        rel_scores_t = torch.tensor(rel_scores_list, dtype=torch.float32, device=dev)  # (N,)
+
+        top_tail_idx   = torch.empty(N, k_t, dtype=torch.long,    device=dev)
+        top_tail_probs = torch.empty(N, k_t, dtype=torch.float32, device=dev)
+
+        model = self.kgc_model.model
+        with torch.no_grad():
+            for start in range(0, N, chunk_size):
+                end  = min(start + chunk_size, N)
+                raw  = model.score_t(hr_tensor[start:end])         # (C, num_entities)
+                vals, idx = torch.topk(raw, k_t, dim=1)            # (C, k_t)
+                top_tail_idx[start:end]   = idx
+                top_tail_probs[start:end] = F.softmax(vals, dim=1) # per-bucket normalise
+
+        # ── Combine rel_score with tail probs (vectorised on GPU) ─────────────
+        combined = (
+            self.alpha * rel_scores_t.unsqueeze(1) +
+            (1.0 - self.alpha) * top_tail_probs
+        )                                                            # (N, k_t)
+
+        # Single transfer to CPU for the grouping step
+        top_tail_idx_cpu = top_tail_idx.cpu()
+        combined_cpu     = combined.cpu()
+        hr_rels_cpu      = hr_tensor[:, 1].cpu()
+
+        # ── Group by head, sort, truncate ─────────────────────────────────────
         results: Dict[int, List[Tuple[int, int, int, float]]] = {}
         for i, h in enumerate(heads):
-            results[h] = self.generate_candidates(h, max_candidates)
+            start, end = head_spans[i]
+            if start == end:
+                results[h] = []
+                continue
+
+            rels   = hr_rels_cpu[start:end].tolist()               # (n_rels,)
+            t_idx  = top_tail_idx_cpu[start:end]                   # (n_rels, k_t)
+            scores = combined_cpu[start:end]                       # (n_rels, k_t)
+
+            cands: List[Tuple[int, int, int, float]] = [
+                (h, rel_id, int(tail_id), float(score))
+                for rel_id, row_idx, row_scores in zip(rels, t_idx.tolist(), scores.tolist())
+                for tail_id, score in zip(row_idx, row_scores)
+            ]
+
+            cands.sort(key=lambda x: -x[3])
+            if max_candidates is not None:
+                cands = cands[:max_candidates]
+            results[h] = cands
+
             if (i + 1) % 100 == 0:
-                logger.debug(f"  Pipeline: processed {i + 1}/{len(heads)} entities.")
+                logger.debug(f"  Pipeline: grouped {i + 1}/{len(heads)} entities.")
+
         return results

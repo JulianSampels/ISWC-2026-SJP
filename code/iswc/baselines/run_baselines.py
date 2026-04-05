@@ -43,13 +43,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import hashlib
 import math
+import pickle
 import sys
 import time
 from collections import defaultdict
 from itertools import product
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from tqdm import tqdm
 
 import torch
 
@@ -80,22 +83,172 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _hash_heads(heads: List[int]) -> str:
+    """Stable, order-independent hash of a graph's triple set.
+
+    Triples are sorted before hashing so two samples with the same subgraph
+    but different ordering produce the same key.
+    """
+    heads = sorted(heads)
+    heads = [str(x) for x in heads]
+    canonical = ','.join(heads)
+    return hashlib.sha256(canonical.strip().encode()).hexdigest()[:16]
+
+
+from pathlib import Path
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+SCHEMA = pa.schema([
+    ("key", pa.int64()),
+    (
+        "values",
+        pa.list_(
+            pa.struct([
+                ("x", pa.int64()),
+                ("y", pa.int64()),
+                ("z", pa.int64()),
+                ("score", pa.float64()),
+            ])
+        ),
+    ),
+])
+
+
+def save_candidates(candidates: dict[int, list[(int, int, int, float)]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    keys = list(candidates.keys())
+    values = [
+        [{"x": a, "y": b, "z": c, "score": d} for (a, b, c, d) in records]
+        for records in candidates.values()
+    ]
+
+    table = pa.table(
+        {
+            "key": pa.array(keys, type=pa.int64()),
+            "values": pa.array(
+                values,
+                type=pa.list_(
+                    pa.struct([
+                        ("x", pa.int64()),
+                        ("y", pa.int64()),
+                        ("z", pa.int64()),
+                        ("score", pa.float64()),
+                    ])
+                ),
+            ),
+        },
+        schema=SCHEMA,
+    )
+
+    pq.write_table(table, path, compression="zstd")
+
+
+# from pathlib import Path
+# import pandas as pd
+def load_candidates(path: Path) -> Dict[int, List[(int, int, int, float)]]:
+    table = pq.read_table(path, columns=["key", "values"])
+    d = table.to_pylist()
+
+    return {
+        row["key"]: [
+            (item["x"], item["y"], item["z"], item["score"])
+            for item in row["values"]
+        ]
+        for row in d
+    }
+
 # ---------------------------------------------------------------------------
 # Evaluation helpers
 # ---------------------------------------------------------------------------
+def prepare_candidates(
+    pipeline: InstanceCompletionPipeline,
+    test_heads: List[int],
+    ground_truth: Dict[int, Set[Tuple[int, int]]],
+    cache_dir: Path,
+    max_candidates: Optional[int] = None,
+    head_batch_size: int = 256,
+    chunk_size: int = 512,
+    num_workers: int = 0,
+) -> None:
+    """
+    Pre-generate and cache candidates for all test heads.
+
+    Heads whose cache file already exists are skipped.  The remaining heads
+    are processed in sub-batches of `head_batch_size` using
+    pipeline.generate_candidates_batch(), which scores all (h, r) pairs in
+    that sub-batch in a single chunked GPU pass (controlled by `chunk_size`).
+    Within each sub-batch, Stage-1 relation prediction is optionally
+    parallelised across `num_workers` CPU processes.
+
+    Each head's candidate list is stored as an individual pickle file:
+        cache_dir / head_{h}.pkl  →  List[(head, rel, tail, score)]
+    """
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    metadata_file = cache_dir / '00metadata.json'
+    heads_todo = [h for h in test_heads if ground_truth.get(h)]
+
+    if metadata_file.exists():
+        metadata = json.loads(metadata_file.read_text())
+        heads_todo = [h for h in heads_todo if h not in metadata.keys()]
+    else:
+        metadata = {}
+
+    if not heads_todo:
+        logger.info("  All candidates already cached — skipping generation.")
+        return
+
+    logger.info(
+        f"  Generating candidates for {len(heads_todo)} heads "
+        f"(head_batch_size={head_batch_size}, chunk_size={chunk_size}, max_candidates={max_candidates})…"
+    )
+
+    for batch_start in tqdm(range(0, len(heads_todo), head_batch_size),
+                            desc="candidate batches", unit="batch"):
+        batch = heads_todo[batch_start : batch_start + head_batch_size]
+        t0 = time.time()
+        batch_results = pipeline.generate_candidates_batch(
+            batch,
+            max_candidates=max_candidates,
+            chunk_size=chunk_size,
+            num_workers=num_workers,
+        )
+        logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
+
+        t0 = time.time()
+        cache_file = cache_dir / f'{_hash_heads(batch)}.parquet'
+        for h in batch:
+            metadata[h] = str(cache_file)
+
+        save_candidates(batch_results, cache_file)
+        metadata_file.write_text(json.dumps(metadata, indent=2))
+
+        logger.info(f"  Dump all candidate generation ready in {time.time()-t0:.1f}s")
+        import ipdb; ipdb.set_trace()
+
+    logger.info(f"  Candidate generation complete ({len(heads_todo)} heads).")
+
 
 def evaluate_pipeline(
     pipeline: InstanceCompletionPipeline,
     test_heads: List[int],
     ground_truth: Dict[int, Set[Tuple[int, int]]],
     k_values: Tuple[int, ...] = (1, 5, 10, 50),
-    coverage_sizes: Tuple[int, ...] = (10, 50, 100, 200, 500, 1000, 5000, 10000, 50000, 100000),
+    coverage_sizes: Tuple[int, ...] = (10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000),
+    cache_dir: Optional[Path] = None,
+    max_candidates: Optional[int] = None,
+    head_batch_size: int = 256,
+    chunk_size: int = 512,
+    num_workers: int = 0,
 ) -> Dict[str, float]:
     """
     Comprehensive ranking evaluation of the instance completion pipeline.
 
-    For each test head h the pipeline generates a ranked candidate list.
-    Ground-truth (r, t) pairs are located in that list and used to compute:
+    Candidates are generated via prepare_candidates() (GPU-batched, cached to
+    disk), then loaded per-head for metric computation.  Heads whose cache
+    file is missing after generation are skipped gracefully.
 
     Hits@K     — fraction of gold triples with rank ≤ K   (micro, per-triple)
     Recall@K   — fraction of gold triples found in top-K  (macro, per-entity)
@@ -109,9 +262,18 @@ def evaluate_pipeline(
     Dict with keys hits@K, recall@K, ndcg@K, map, mrr, coverage@S,
     n_triples, n_heads.
     """
-    # precompute IDCG denominators once
+    # prepare_candidates(
+    #     pipeline, test_heads, ground_truth, cache_dir,
+    #     max_candidates=max_candidates,
+    #     head_batch_size=head_batch_size,
+    #     chunk_size=chunk_size,
+    #     num_workers=num_workers,
+    # )
+
+    # ── Metric accumulators ───────────────────────────────────────────────────
     max_k = max(k_values)
     _idcg_cache: Dict[int, float] = {}
+
     def idcg(n: int) -> float:
         if n not in _idcg_cache:
             _idcg_cache[n] = sum(1.0 / math.log2(i + 2) for i in range(n))
@@ -126,67 +288,78 @@ def evaluate_pipeline(
     n_triples   = 0
     n_heads_evaluated = 0
 
-    for i, h in enumerate(test_heads):
-        gold = ground_truth.get(h)
-        if not gold:
-            continue
-
-        candidates = pipeline.generate_candidates(h)
-        n_gold = len(gold)
-
-        # ── build rank_of: (r, t) → 1-indexed rank ───────────────────────────
-        rank_of: Dict[Tuple[int, int], int] = {}
-        for rank, (_, r, t, _) in enumerate(candidates, start=1):
-            rt = (r, t)
-            if rt not in rank_of:
-                rank_of[rt] = rank
-
-        # ── Hits@K, Recall@K, MRR (per-triple loop) ──────────────────────────
-        for r, t in gold:
-            n_triples += 1
-            rank = rank_of.get((r, t))
-            if rank is not None:
-                for k in k_values:
-                    if rank <= k:
-                        hits[k] += 1
-                rr_sum += 1.0 / rank
-
-        for k in k_values:
-            found_k = sum(1 for rt in gold if rank_of.get(rt, max_k + 1) <= k)
-            recall_sum[k] += found_k / n_gold
-
-        # ── NDCG@K ────────────────────────────────────────────────────────────
-        for k in k_values:
-            dcg = sum(
-                1.0 / math.log2(rank + 1)
-                for rank, (_, r, t, _) in enumerate(candidates[:k], start=1)
-                if (r, t) in gold
-            )
-            denom = idcg(min(n_gold, k))
-            ndcg_sum[k] += dcg / denom if denom > 0 else 0.0
-
-        # ── MAP ───────────────────────────────────────────────────────────────
-        n_relevant_seen = 0
-        ap = 0.0
-        for rank, (_, r, t, _) in enumerate(candidates, start=1):
-            if (r, t) in gold:
-                n_relevant_seen += 1
-                ap += n_relevant_seen / rank
-        map_sum += ap / n_gold
-
-        # ── Coverage@S ────────────────────────────────────────────────────────
-        min_gold_rank = min(
-            (rank_of[rt] for rt in gold if rt in rank_of),
-            default=None,
+    heads_todo = [h for h in test_heads if ground_truth.get(h)]
+    # ── Per-head evaluation (loads from cache) ────────────────────────────────
+    for batch_start in tqdm(range(0, len(heads_todo), head_batch_size),
+                            desc="", unit="batch"):
+        batch = heads_todo[batch_start : batch_start + head_batch_size]
+        t0 = time.time()
+        batch_results = pipeline.generate_candidates_batch(
+            batch,
+            max_candidates=max_candidates,
+            chunk_size=chunk_size,
+            num_workers=num_workers,
         )
-        for s in coverage_sizes:
-            if min_gold_rank is not None and min_gold_rank <= s:
-                coverage[s] += 1
+        logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
+        t0 = time.time()
+        for h, candidates in batch_results.items():
+            gold = ground_truth.get(h)
+            n_gold = len(gold)
 
-        n_heads_evaluated += 1
-        if (i + 1) % 200 == 0:
-            logger.info(f"    evaluated {i + 1}/{len(test_heads)} heads …")
+            # ── rank_of: (r, t) → 1-indexed rank ─────────────────────────────────
+            rank_of: Dict[Tuple[int, int], int] = {}
+            for rank, (_, r, t, _) in enumerate(candidates, start=1):
+                rt = (r, t)
+                if rt not in rank_of:
+                    rank_of[rt] = rank
 
+            # ── Hits@K and MRR (per-triple) ───────────────────────────────────────
+            for r, t in gold:
+                n_triples += 1
+                rank = rank_of.get((r, t))
+                if rank is not None:
+                    for k in k_values:
+                        if rank <= k:
+                            hits[k] += 1
+                    rr_sum += 1.0 / rank
+
+            # ── Recall@K (per-entity) ─────────────────────────────────────────────
+            for k in k_values:
+                found_k = sum(1 for rt in gold if rank_of.get(rt, max_k + 1) <= k)
+                recall_sum[k] += found_k / n_gold
+
+            # ── NDCG@K (per-entity) ───────────────────────────────────────────────
+            for k in k_values:
+                dcg = sum(
+                    1.0 / math.log2(rank + 1)
+                    for rank, (_, r, t, _) in enumerate(candidates[:k], start=1)
+                    if (r, t) in gold
+                )
+                denom = idcg(min(n_gold, k))
+                ndcg_sum[k] += dcg / denom if denom > 0 else 0.0
+
+            # ── MAP (per-entity) ──────────────────────────────────────────────────
+            n_relevant_seen = 0
+            ap = 0.0
+            for rank, (_, r, t, _) in enumerate(candidates, start=1):
+                if (r, t) in gold:
+                    n_relevant_seen += 1
+                    ap += n_relevant_seen / rank
+            map_sum += ap / n_gold
+
+            # ── Coverage@S (per-entity) ───────────────────────────────────────────
+            min_gold_rank = min(
+                (rank_of[rt] for rt in gold if rt in rank_of),
+                default=None,
+            )
+            for s in coverage_sizes:
+                if min_gold_rank is not None and min_gold_rank <= s:
+                    coverage[s] += 1
+
+            n_heads_evaluated += 1
+
+        logger.info(f"  Metrics ready in {time.time()-t0:.1f}s")
+    # ── Aggregate ─────────────────────────────────────────────────────────────
     n_h = n_heads_evaluated or 1
     n_t = n_triples or 1
 
@@ -315,20 +488,27 @@ def parse_args() -> argparse.Namespace:
                    help="PyKEEN KGC model names to evaluate.")
     p.add_argument("--k-r",             type=int, default=100,
                    help="Top-k relations per head entity (Stage 1).")
-    p.add_argument("--k-t",             type=int, default=5000,
+    p.add_argument("--k-t",             type=int, default=10000,
                    help="Top-k tails per (head, relation) query (Stage 2).")
     p.add_argument("--alpha",           type=float, default=0.5,
                    help="Score mixing weight: alpha*rel + (1-alpha)*tail.")
     p.add_argument("--embed-dim",       type=int, default=128,
                    help="Embedding dimension for both BPR and KGC models.")
-    p.add_argument("--epochs",          type=int, default=200,
+    p.add_argument("--epochs",          type=int, default=100,
                    help="Training epochs for KGC models.")
     p.add_argument("--bpr-epochs",      type=int, default=None,
                    help="BPR training epochs (defaults to --epochs).")
-    p.add_argument("--max-candidates",  type=int, default=500,
+    p.add_argument("--max-candidates",  type=int, default=100_0000,
                    help="Max candidates returned per head entity.")
     p.add_argument("--test-limit",      type=int, default=None,
                    help="Limit number of test head entities (for quick runs).")
+    p.add_argument("--head-batch-size", type=int, default=256,
+                   help="Heads per generate_candidates_batch call (controls Stage-1 memory).")
+    p.add_argument("--chunk-size",      type=int, default=512,
+                   help="(h,r) pairs per score_t GPU call. Peak GPU mem ≈ chunk×entities×4B.")
+    p.add_argument("--num-workers",     type=int, default=0,
+                   help="CPU processes for Stage-1 relation prediction. "
+                        "0=sequential. Set >0 only with a CPU-based relation predictor.")
     p.add_argument("--output-dir",      default=None,
                    help="Directory to save per-run JSON results. Skipped if not set.")
     p.add_argument("--device",          default=None,
@@ -442,6 +622,11 @@ def main() -> None:
             pipeline=pipeline,
             test_heads=test_heads,
             ground_truth=ground_truth,
+            cache_dir=Path(f'iswc_data/cache/candidates/{kgc_name}_{rel_name}_{args.dataset}_r{args.k_r}_t{args.k_t}'),
+            max_candidates=args.max_candidates,
+            head_batch_size=args.head_batch_size,
+            chunk_size=args.chunk_size,
+            num_workers=args.num_workers,
         )
         elapsed = time.time() - t0
         logger.info(
