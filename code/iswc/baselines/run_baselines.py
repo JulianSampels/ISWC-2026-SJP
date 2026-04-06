@@ -54,6 +54,9 @@ from itertools import product
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from tqdm import tqdm
+from pathlib import Path
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import torch
 
@@ -95,10 +98,6 @@ def _hash_heads(heads: List[int]) -> str:
     canonical = ','.join(heads)
     return hashlib.sha256(canonical.strip().encode()).hexdigest()[:16]
 
-
-from pathlib import Path
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 SCHEMA = pa.schema([
     ("key", pa.int64()),
@@ -427,6 +426,7 @@ def evaluate_pipeline(
 
     # ── Checkpoint: resume if interrupted ────────────────────────────────────
     ckpt_path = cache_dir / _EVAL_CKPT_NAME
+    cache_dir.mkdir(exist_ok=True, parents=True)
     ckpt      = _load_eval_checkpoint(ckpt_path)
 
     if ckpt and ckpt.get("k_values") == list(k_values) \
@@ -627,7 +627,7 @@ def build_relation_predictor(
             dataset_name=dataset_name,
             cache_dir=cache_dir,
         )
-        pred.train(num_epochs=bpr_epochs, verbose=False)
+        pred.train(num_epochs=bpr_epochs, verbose=True)
         return pred
 
     if name == "recoin":
@@ -837,7 +837,7 @@ def main() -> None:
                 "test_heads":    len(test_heads),
                 "metrics":       metrics,
             }
-            out_path = output_dir / f"{args.dataset}_{config_name}.json"
+            out_path = output_dir / f"{args.dataset}_{config_name}_r{args.k_r}_t{args.k_t}.json"
             out_path.write_text(json.dumps(run_meta, indent=2))
             logger.info(f"  Saved → {out_path}")
 
@@ -845,7 +845,7 @@ def main() -> None:
     print(format_results_table(all_results))
 
     if output_dir:
-        summary_path = output_dir / f"{args.dataset}_summary.json"
+        summary_path = output_dir / f"{args.dataset}_r{args.k_r}_t{args.k_t}_summary.json"
         summary_path.write_text(json.dumps(all_results, indent=2))
         logger.info(f"Summary saved → {summary_path}")
 

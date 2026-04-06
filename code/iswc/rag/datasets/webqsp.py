@@ -60,11 +60,8 @@ class WebQSPDataset(QADataset):
         """
         if path is not None:
             p = Path(path)
-            if p.is_dir():
-                json_file = p / f"{split}.json"
-                self._samples = self._load_hub_json(json_file)
-            else:
-                self._samples = self._load_original_json(str(p))
+            json_file = p / f"{split}.json"
+            self._samples = self._load_hub_json(json_file)
         else:
             self._samples = self._load_from_hub(None, split)
         logger.info("WebQSP [%s]: loaded %d samples", split, len(self._samples))
@@ -101,35 +98,6 @@ class WebQSPDataset(QADataset):
             answer_entities=answer_entities,
             graph=row.get("graph", []),
         )
-
-    def _load_original_json(self, path: str) -> List[QASample]:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        questions = data.get("Questions", data)  # handle both top-level wrappers
-        samples = []
-        for q in questions:
-            qid = q.get("QuestionId", "")
-            text = q.get("RawQuestion", q.get("ProcessedQuestion", ""))
-            topic_ents = [e["FreebaseId"] for e in q.get("QuestionEntities", [])]
-            # Collect answers across all parses (deduplicated)
-            seen, answers, answer_ents = set(), [], []
-            for parse in q.get("Parses", []):
-                for ans in parse.get("Answers", []):
-                    arg = ans.get("AnswerArgument", "")
-                    name = ans.get("EntityName") or arg
-                    key = name.lower().strip()
-                    if key not in seen:
-                        seen.add(key)
-                        answers.append(key)
-                        answer_ents.append(arg)
-            samples.append(QASample(
-                question_id=qid,
-                question=text,
-                topic_entities=topic_ents,
-                answers=answers,
-                answer_entities=answer_ents,
-            ))
-        return samples
 
     # ------------------------------------------------------------------
     # Sequence interface

@@ -59,11 +59,8 @@ class CWQDataset(QADataset):
         """
         if path is not None:
             p = Path(path)
-            if p.is_dir():
-                json_file = p / f"{split}.json"
-                self._samples = self._load_hub_json(json_file)
-            else:
-                self._samples = self._load_original_json(str(p))
+            json_file = p / f"{split}.json"
+            self._samples = self._load_hub_json(json_file)
         else:
             self._samples = self._load_from_hub(None, split)
         logger.info("CWQ [%s]: loaded %d samples", split, len(self._samples))
@@ -97,34 +94,8 @@ class CWQDataset(QADataset):
             topic_entities=topic_entities,
             answers=answers,
             answer_entities=answer_entities,
+            graph=row.get("graph", []),
         )
-
-    def _load_original_json(self, path: str) -> List[QASample]:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        samples = []
-        for q in data:
-            qid = q.get("ID", q.get("id", ""))
-            text = q.get("question", "")
-            topic_ents = [e["id"] for e in q.get("entities", [])]
-            answers, answer_ents = [], []
-            for ans in q.get("answers", []):
-                name = ans.get("answer", ans.get("answerName", ""))
-                eid = ans.get("answer_id", ans.get("answerId", ""))
-                answers.append(name.lower().strip())
-                answer_ents.append(eid)
-            samples.append(QASample(
-                question_id=qid,
-                question=text,
-                topic_entities=topic_ents,
-                answers=answers,
-                answer_entities=answer_ents,
-            ))
-        return samples
-
-    # ------------------------------------------------------------------
-    # Sequence interface
-    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return len(self._samples)
