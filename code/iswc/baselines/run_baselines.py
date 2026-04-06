@@ -14,7 +14,8 @@ For each head entity h in the test set:
 Metrics reported:
     Hits@K    — fraction of gold triples appearing in top-K (micro, per-triple)
     Recall@K  — fraction of gold triples found in top-K (macro, per-entity)
-    NDCG@K    — normalised discounted cumulative gain (macro, per-entity)
+    NDCG@K    — normalised discounted cumulative gain at K (macro, per-entity)
+    NDCG      — normalised discounted cumulative gain over full ranked list (macro, per-entity)
     MAP       — mean average precision (macro, per-entity)
     MRR       — mean reciprocal rank (micro, per-triple)
     Coverage@S — fraction of entities with ≥1 gold triple in top-S candidates
@@ -187,6 +188,7 @@ def _accumulators_to_state(
     batch_start: int,
     hits: Dict, recall_sum: Dict, ndcg_sum: Dict,
     coverage: Dict, rr_sum: float, map_sum: float,
+    ndcg_full_sum: float,
     n_triples: int, n_heads_evaluated: int,
     k_values: Tuple, coverage_sizes: Tuple,
 ) -> Dict:
@@ -199,6 +201,7 @@ def _accumulators_to_state(
         "coverage":          {str(s): v for s, v in coverage.items()},
         "rr_sum":            rr_sum,
         "map_sum":           map_sum,
+        "ndcg_full_sum":     ndcg_full_sum,
         "n_triples":         n_triples,
         "n_heads_evaluated": n_heads_evaluated,
         "k_values":          list(k_values),
@@ -216,6 +219,7 @@ def _state_to_accumulators(state: Dict, k_values: Tuple, coverage_sizes: Tuple) 
         "coverage":          {int(s): v for s, v in state["coverage"].items()},
         "rr_sum":            state["rr_sum"],
         "map_sum":           state["map_sum"],
+        "ndcg_full_sum":     state.get("ndcg_full_sum", 0.0),
         "n_triples":         state["n_triples"],
         "n_heads_evaluated": state["n_heads_evaluated"],
     }
@@ -287,6 +291,16 @@ def _eval_one_head(args: Tuple) -> Dict:
         idcg = sum(1.0 / math.log2(i + 2) for i in range(min(n_gold, k)))
         ndcg[k] = dcg / idcg if idcg > 0 else 0.0
 
+    # NDCG (full list)
+    n_cands = len(candidates)
+    dcg_full = sum(
+        1.0 / math.log2(rank + 1)
+        for rank, (_, r, t, _) in enumerate(candidates, start=1)
+        if (r, t) in gold
+    )
+    idcg_full = sum(1.0 / math.log2(i + 2) for i in range(min(n_gold, n_cands)))
+    ndcg_full = dcg_full / idcg_full if idcg_full > 0 else 0.0
+
     # MAP
     n_rel_seen, ap = 0, 0.0
     for rank, (_, r, t, _) in enumerate(candidates, start=1):
@@ -306,6 +320,7 @@ def _eval_one_head(args: Tuple) -> Dict:
         "hits":      hits,
         "recall":    recall,
         "ndcg":      ndcg,
+        "ndcg_full": ndcg_full,
         "map":       map_val,
         "rr":        rr,
         "coverage":  coverage,
@@ -439,6 +454,7 @@ def evaluate_pipeline(
         coverage      = restored["coverage"]
         rr_sum        = restored["rr_sum"]
         map_sum       = restored["map_sum"]
+        ndcg_full_sum = restored["ndcg_full_sum"]
         n_triples     = restored["n_triples"]
         n_heads_evaluated = restored["n_heads_evaluated"]
         logger.info(
@@ -457,6 +473,7 @@ def evaluate_pipeline(
         coverage          = {s: 0   for s in coverage_sizes}
         rr_sum            = 0.0
         map_sum           = 0.0
+        ndcg_full_sum     = 0.0
         n_triples         = 0
         n_heads_evaluated = 0
 
@@ -508,8 +525,9 @@ def evaluate_pipeline(
                     hits[k]       += pr["hits"][k]
                     recall_sum[k] += pr["recall"][k]
                     ndcg_sum[k]   += pr["ndcg"][k]
-                map_sum  += pr["map"]
-                rr_sum   += pr["rr"]
+                map_sum       += pr["map"]
+                rr_sum        += pr["rr"]
+                ndcg_full_sum += pr["ndcg_full"]
                 for s in coverage_sizes:
                     coverage[s] += pr["coverage"][s]
                 n_triples         += pr["n_triples"]
@@ -522,7 +540,7 @@ def evaluate_pipeline(
             _save_eval_checkpoint(ckpt_path, _accumulators_to_state(
                 next_batch_start,
                 hits, recall_sum, ndcg_sum, coverage,
-                rr_sum, map_sum, n_triples, n_heads_evaluated,
+                rr_sum, map_sum, ndcg_full_sum, n_triples, n_heads_evaluated,
                 k_values, coverage_sizes,
             ))
 
@@ -545,8 +563,9 @@ def evaluate_pipeline(
         metrics[f"hits@{k}"]   = hits[k]       / n_t
         metrics[f"recall@{k}"] = recall_sum[k] / n_h
         metrics[f"ndcg@{k}"]   = ndcg_sum[k]   / n_h
-    metrics["map"]       = map_sum / n_h
-    metrics["mrr"]       = rr_sum  / n_t
+    metrics["map"]       = map_sum       / n_h
+    metrics["mrr"]       = rr_sum        / n_t
+    metrics["ndcg"]      = ndcg_full_sum / n_h
     for s in coverage_sizes:
         metrics[f"coverage@{s}"] = coverage[s] / n_h
     metrics["n_triples"] = float(n_triples)
@@ -565,7 +584,7 @@ def format_results_table(
         [f"hits@{k}"     for k in show_k] +
         [f"recall@{k}"   for k in show_k] +
         [f"ndcg@{k}"     for k in show_k] +
-        ["map", "mrr"] +
+        ["ndcg", "map", "mrr"] +
         [f"coverage@{s}" for s in coverage_sizes] +
         ["n_triples"]
     )
@@ -573,7 +592,7 @@ def format_results_table(
         [f"H@{k}"    for k in show_k] +
         [f"R@{k}"    for k in show_k] +
         [f"nDCG@{k}" for k in show_k] +
-        ["MAP", "MRR"] +
+        ["nDCG", "MAP", "MRR"] +
         [f"Cov@{s}"  for s in coverage_sizes] +
         ["Triples"]
     )
@@ -814,6 +833,7 @@ def main() -> None:
             f"H@10={metrics.get('hits@10', 0):.4f}  "
             f"R@10={metrics.get('recall@10', 0):.4f}  "
             f"nDCG@10={metrics.get('ndcg@10', 0):.4f}  "
+            f"nDCG={metrics.get('ndcg', 0):.4f}  "
             f"MAP={metrics.get('map', 0):.4f}  "
             f"MRR={metrics.get('mrr', 0):.4f}  "
             f"Cov@100={metrics.get('coverage@100', 0):.4f}  "

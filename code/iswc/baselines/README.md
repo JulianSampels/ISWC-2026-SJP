@@ -15,6 +15,7 @@ baselines/
 │   ├── gfrt_filter.py      Candidate generation + training wrappers
 │   ├── gfrt_graphs.py      Head-rel and tail-rel graph construction
 │   └── gfrt_model.py       Attention-GNN architecture
+├── bpr_recoin.py           BPR and Recoin relation-prediction baselines (RETA paper)
 └── README.md
 ```
 
@@ -22,6 +23,49 @@ baselines/
 
 All baselines accept a training triple tensor of shape `(N, 3)` with integer entity/relation ids,
 matching the format output by `PathE/pathe/kgloader.py`.
+
+### BPR (Bayesian Personalised Ranking)
+
+BPR learns entity and relation embeddings via a pairwise ranking objective so that,
+for a given head h, observed relations are scored higher than unobserved ones.
+Tail candidates are retrieved from the training co-occurrence index.
+
+```python
+from iswc.baselines import BPRBaseline
+
+bpr = BPRBaseline(
+    train_triples,
+    num_entities=num_entities,
+    num_relations=num_relations,
+    embed_dim=64,
+    num_epochs=100,
+    k_r=10,   # top-k relations per entity
+    k_t=50,   # top-k tails per (entity, relation)
+    device=device,
+)
+candidates = bpr.generate_candidates_batch(test_head_ids, max_candidates=500)
+```
+
+### Recoin (Collaborative Filtering for Relations)
+
+Recoin ranks relations for entity h by their frequency among entities that
+share at least one entity type with h (Boolean similarity from the RETA paper).
+Requires `entity_types: Dict[entity_id -> List[type_id]]`.
+
+```python
+from iswc.baselines import RecoinBaseline
+
+recoin = RecoinBaseline(
+    train_triples,
+    entity_types=entity_types,   # {entity_id: [type_id, ...]}
+    k_r=10,
+    k_t=50,
+)
+candidates = recoin.generate_candidates_batch(test_head_ids, max_candidates=500)
+
+# Access the relation predictor directly (returns [(rel_id, score), ...])
+scores = recoin.predict_relations(head_id, top_k=20)
+```
 
 ### RETA / RETA++
 
