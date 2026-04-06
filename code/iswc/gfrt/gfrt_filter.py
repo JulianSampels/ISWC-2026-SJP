@@ -182,14 +182,14 @@ class GFRTFilter:
     def generate_candidates(
         self,
         head: int,
-        candidate_budget: Optional[int] = None,
+        max_candidates: Optional[int] = None,
     ) -> List[Tuple[int, int, int, float]]:
         """
         Generate (head, relation, tail, score) candidates for a head entity.
 
         Args:
             head:             Head entity id.
-            candidate_budget: Maximum candidates to return (top-x).
+            max_candidates: Maximum candidates to return (top-x).
 
         Returns:
             Sorted list of (head, relation, tail, score) tuples.
@@ -228,18 +228,19 @@ class GFRTFilter:
 
         # Step 4: Sort and return top-x
         candidates.sort(key=lambda x: -x[3])
-        if candidate_budget is not None:
-            candidates = candidates[:candidate_budget]
+        if max_candidates is not None:
+            candidates = candidates[:max_candidates]
         return candidates
 
     def generate_candidates_batch(
         self,
         heads: List[int],
-        candidate_budget: Optional[int] = None,
+        max_candidates: Optional[int] = None,
+        **kwargs,
     ) -> Dict[int, List[Tuple[int, int, int, float]]]:
         """Generate candidates for a batch of head entities."""
         return {
-            h: self.generate_candidates(h, candidate_budget)
+            h: self.generate_candidates(h, max_candidates)
             for h in heads
         }
 

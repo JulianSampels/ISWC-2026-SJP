@@ -55,10 +55,9 @@ from iswc.gfrt import (
     GFRTTrainer,
     build_gfrt_pipeline,
 )
-from iswc.evaluation.entity_metrics import (
-    evaluate_entity_centric,
+from iswc.evaluation.evaluate import (
+    evaluate_model,
     format_results_table,
-    MetricResults,
 )
 
 logging.basicConfig(
@@ -73,31 +72,6 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_predictions(
-    gfrt_filter: GFRTFilter,
-    test_heads: List[int],
-    candidate_budget: int,
-    batch_size: int = 64,
-) -> Dict[int, List[Tuple[int, int]]]:
-    """
-    Generate (r, t) ranked predictions for each test head.
-
-    Returns Dict[head_id -> list of (r, t) in ranked order].
-    """
-    predictions: Dict[int, List[Tuple[int, int]]] = {}
-    total = len(test_heads)
-
-    for start in range(0, total, batch_size):
-        batch = test_heads[start: start + batch_size]
-        raw = gfrt_filter.generate_candidates_batch(batch, candidate_budget)
-        for h, cands in raw.items():
-            # cands: list of (head, relation, tail, score) sorted by score desc
-            predictions[h] = [(r, t) for (_, r, t, _) in cands]
-
-        if (start // batch_size) % 10 == 0:
-            logger.info(f"  Generated candidates for {min(start+batch_size, total)}/{total} heads")
-
-    return predictions
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +100,7 @@ def main() -> None:
                         help="Top-k relations to select per head (candidate generation).")
     parser.add_argument("--k-t",              type=int,   default=100,
                         help="Top-k tail entities to select per head (candidate generation).")
-    parser.add_argument("--candidate-budget", type=int,   default=200,
+    parser.add_argument("--max-candidate", type=int,   default=200,
                         help="Maximum (r, t) candidates returned per head.")
     parser.add_argument("--batch-size",       type=int,   default=256,
                         help="Training batch size (triples per step).")
@@ -185,7 +159,7 @@ def main() -> None:
     top_k1 = args.top_k1 if args.top_k1 is not None else (20  if is_umls else 100)
     top_k2 = args.top_k2 if args.top_k2 is not None else (10  if is_umls else 30)
     logger.info(f"  Graph construction: top_k1={top_k1}, top_k2={top_k2}")
-    args.candidate_budget = args.k_r * args.k_t
+    args.max_candidates = args.k_r * args.k_t
 
     args.save_model = args.load_model = f'iswc_data/cache/models/gfrt_{args.dataset}.pt'
     # ── Build graphs and model ────────────────────────────────────────────────
@@ -269,46 +243,22 @@ def main() -> None:
         top_n_tails=args.k_t,
     )
 
-    t0 = time.time()
-    predictions = _build_predictions(
-        gfrt_filter,
-        test_heads,
-        candidate_budget=args.candidate_budget,
-    )
-    logger.info(f"  Candidate generation done in {time.time()-t0:.1f}s")
-
-    # ── Evaluate ──────────────────────────────────────────────────────────────
+    # ── Evaluate (incremental: generate + evaluate batch by batch) ───────────
+    # k_values = (1, 3, 5, 10, 20, 50, 100)
+    # budget   = args.candidate_budget
     logger.info("Evaluating …")
-    results = evaluate_entity_centric(
-        predictions=predictions,
-        gold_triples=test_triples,
-        k_values=[1, 3, 5, 10, 20, 50, 100],
-        test_heads=test_heads,
+    metrics = evaluate_model(
+        model=gfrt_filter,
+        ground_truth=ground_truth,
+        cache_dir=Path(f"iswc_data/cache/candidates/gfrt_r{args.k_r}_t{args.k_t}"),
+        batch_size=256,
+        max_candidates=args.max_candidates,
     )
 
     # ── Print results ─────────────────────────────────────────────────────────
-    table = format_results_table({"GFRT": results}, k=10)
+    table = format_results_table({"GFRT": metrics})
     print("\n" + table)
 
-    print("\n── Full metrics ──────────────────────────────────────────────────")
-    print(f"  MRR:              {results.mrr:.4f}")
-    print(f"  Hits@1:           {results.hits_at_1:.4f}")
-    print(f"  Hits@3:           {results.hits_at_3:.4f}")
-    print(f"  Hits@10:          {results.hits_at_10:.4f}")
-    print(f"  MAP:              {results.map:.4f}")
-    print(f"  NDCG (full):      {results.ndcg:.4f}")
-    for k in [5, 10, 20, 50]:
-        print(
-            f"  NDCG@{k:<3}:         {results.ndcg_at_k.get(k, 0):.4f}  "
-            f"EntityHit@{k:<3}: {results.entity_hit_at_k.get(k, 0):.4f}  "
-            f"EntityRecall@{k:<3}: {results.entity_recall_at_k.get(k, 0):.4f}"
-        )
-    print(f"  B2FH:             {results.budget_to_first_hit:.2f}")
-    print(f"  B2FH-Coverage:    {results.budget_to_first_hit_coverage:.4f}")
-    print(f"  Cand.Size (avg):  {results.avg_candidate_size:.1f}")
-    print(f"  Cand.Coverage:    {results.candidate_coverage:.4f}")
-
-    # ── Save results ──────────────────────────────────────────────────────────
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -323,25 +273,11 @@ def main() -> None:
             "k_r":        args.k_r,
             "k_t":        args.k_t,
             "margin":     args.margin,
-            "budget":     args.candidate_budget,
-            "metrics": {
-                "mrr":           results.mrr,
-                "hits_at_1":     results.hits_at_1,
-                "hits_at_3":     results.hits_at_3,
-                "hits_at_10":    results.hits_at_10,
-                "map":           results.map,
-                "ndcg":          results.ndcg,
-                "ndcg_at_k":     results.ndcg_at_k,
-                "entity_hit_at_k":    results.entity_hit_at_k,
-                "entity_recall_at_k": results.entity_recall_at_k,
-                "b2fh":          results.budget_to_first_hit,
-                "b2fh_coverage": results.budget_to_first_hit_coverage,
-                "avg_candidate_size": results.avg_candidate_size,
-                "candidate_coverage": results.candidate_coverage,
-            },
+            "budget":     args.max_candidates,
+            "metrics": metrics,
         }
 
-        results_path = out / f"gfrt_{args.dataset}.json"
+        results_path = out / f"gfrt_{args.dataset}_r{args.k_r}_t{args.k_t}.json"
         results_path.write_text(json.dumps(results_dict, indent=2))
         logger.info(f"Results saved to {results_path}")
 
