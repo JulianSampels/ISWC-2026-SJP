@@ -111,16 +111,18 @@ def main() -> None:
     )
     parser.add_argument("--dataset",          default="fb15k237",
                         help="Dataset name for KgLoader.")
-    parser.add_argument("--epochs",           type=int,   default=200,
-                        help="Number of training epochs.")
-    parser.add_argument("--embed-dim",        type=int,   default=64,
-                        help="Embedding dimensionality.")
+    parser.add_argument("--epochs",           type=int,   default=100,
+                        help="Number of training epochs (paper: {50,100}).")
+    parser.add_argument("--embed-dim",        type=int,   default=100,
+                        help="Embedding dimensionality (paper: {50,100}).")
     parser.add_argument("--num-layers",       type=int,   default=2,
                         help="Number of GNN layers.")
-    parser.add_argument("--top-k1",           type=int,   default=100,
-                        help="Top-k1 similar entities per entity (graph construction).")
-    parser.add_argument("--top-k2",           type=int,   default=30,
-                        help="Top-k2 similar relations per relation (graph construction).")
+    parser.add_argument("--top-k1",           type=int,   default=None,
+                        help="Top-k1 similar entities per entity (graph construction). "
+                             "Default: 100 for FB15K237/JF17k, 20 for UMLS.")
+    parser.add_argument("--top-k2",           type=int,   default=None,
+                        help="Top-k2 similar relations per relation (graph construction). "
+                             "Default: 30 for FB15K237/JF17k, 10 for UMLS.")
     parser.add_argument("--k-r",              type=int,   default=20,
                         help="Top-k relations to select per head (candidate generation).")
     parser.add_argument("--k-t",              type=int,   default=100,
@@ -176,6 +178,13 @@ def main() -> None:
     else:
         logger.info(f"  Unique test heads: {len(test_heads)}")
 
+    # ── Dataset-specific graph construction defaults (paper Table 2) ─────────
+    _UMLS_DATASETS = {"umls"}
+    is_umls = args.dataset.lower() in _UMLS_DATASETS
+    top_k1 = args.top_k1 if args.top_k1 is not None else (20  if is_umls else 100)
+    top_k2 = args.top_k2 if args.top_k2 is not None else (10  if is_umls else 30)
+    logger.info(f"  Graph construction: top_k1={top_k1}, top_k2={top_k2}")
+
     # ── Build graphs and model ────────────────────────────────────────────────
     logger.info("Building GFRT graphs …")
     t0 = time.time()
@@ -185,8 +194,9 @@ def main() -> None:
         num_relations=num_relations,
         embed_dim=args.embed_dim,
         num_layers=args.num_layers,
-        top_k1=args.top_k1,
-        top_k2=args.top_k2,
+        top_k1=top_k1,
+        top_k2=top_k2,
+        margin=args.margin,
         device=device,
     )
     logger.info(f"  Graphs built in {time.time()-t0:.1f}s")
@@ -296,8 +306,11 @@ def main() -> None:
             "epochs":     args.epochs,
             "embed_dim":  args.embed_dim,
             "num_layers": args.num_layers,
+            "top_k1":     top_k1,
+            "top_k2":     top_k2,
             "k_r":        args.k_r,
             "k_t":        args.k_t,
+            "margin":     args.margin,
             "budget":     args.candidate_budget,
             "metrics": {
                 "mrr":           results.mrr,

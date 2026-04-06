@@ -40,9 +40,7 @@ class GFRTTrainer:
     Training strategy (MVF paper, Section 3.4):
       - Optimise L_H_intra, L_T_intra, and L_Cross alternately.
       - Two learning rates: η_1 for intra-view, η_2 for inter-view.
-
-    For simplicity this implementation uses a single Adam optimiser with
-    gradient accumulation across all three losses.
+      - L2-normalise all embeddings after each gradient step (§3.3).
     """
 
     def __init__(
@@ -254,10 +252,11 @@ def build_gfrt_pipeline(
     train_triples: Tensor,
     num_entities: int,
     num_relations: int,
-    embed_dim: int = 64,
+    embed_dim: int = 100,
     num_layers: int = 2,
     top_k1: int = 100,
     top_k2: int = 30,
+    margin: float = 1.0,
     device: torch.device = torch.device("cpu"),
 ) -> Tuple[GFRTModel, GFRTGraph, GFRTGraph]:
     """
@@ -277,6 +276,7 @@ def build_gfrt_pipeline(
         num_relations=num_relations,
         embed_dim=embed_dim,
         num_layers=num_layers,
+        margin_intra=margin,
     ).to(device)
 
     return model, graph_H, graph_T

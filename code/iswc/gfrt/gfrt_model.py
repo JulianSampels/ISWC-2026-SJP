@@ -6,33 +6,30 @@ Reproduced from:
   "A Multi-View Filter for Relation-Free Knowledge Graph Completion."
   Big Data Research, 2023. https://doi.org/10.1016/j.bdr.2023.100397
 
-Architecture overview (GFRT):
-  1. Intra-view module:
-     - Head-rel GNN  (GNN_H): learns h_emb and r_emb^H from G_H.
-     - Tail-rel GNN  (GNN_T): learns t_emb and r_emb^T from G_T.
-  2. Inter-view alignment:
-     - For entities that appear in both G_H and G_T (the "aligned" set E_A),
-       minimise ||e_a^H - e_a^T||_2.
-  3. Scoring:
-     - Head-rel score: f(h, r_H) = h_i · (r_H)_i
-     - Tail-rel score: f(t, r_T) = t_i · (r_T)_i
-     - Candidate score for (h, r, t): S = f(h, r_H) + f(t, r_T) + 1
-       (the +1 avoids negative scores, following the MVF paper implementation).
+GNN layer architecture (MVF paper Eq. 9-11 / 17-19):
 
-GNN layer architecture (MVF paper Eq. 11/19):
-  out_i = tanh(W1 · x_i) + tanh(W2 · attn_agg_i) + tanh(W3 · mean_agg_i)
+  Entity node h_i:
+    out = tanh(W1·h_i)                        [self]
+        + tanh(W2 · Σ_j ζ_ij r_j)            [attention over relation neighbours]
+        + tanh(W3 · (1/|S|) Σ_k h_k)         [unweighted mean over similar entities]
 
-  where:
-    - attn_agg_i = Σ_j ζ_ij · x_j   (attention over entity-relation neighbours)
-    - mean_agg_i = (1/|N|) Σ_j x_j  (unweighted mean over same-type neighbours)
-    - ζ_ij = softmax_j(w0^T σ(W_attn [x_j; x_i] + b))
+  Relation node r_i:
+    out = tanh(W1·r_i)                        [self]
+        + tanh(W2 · Σ_j η_ij h_j)            [attention over entity neighbours, Eq. 18]
+        + tanh(W3 · (1/|S|) Σ_k r_k)         [unweighted mean over similar relations]
 
-Intra-view loss (MVF paper Eq. 16/24):
-  Negative samples are formed by CORRUPTING THE RELATION, not the entity.
-  L_intra = mean [γ + f(e, r'_neg) - f(e, r_pos)]_+
+  Attention coefficients use SEPARATE parameters for entity→relation (ζ) and
+  relation→entity (η) directions (Eq. 10 vs Eq. 18).
+
+Intra-view loss (MVF paper Eq. 16 / 24):
+  Head-rel view: negatives corrupt the RELATION only.
+  Tail-rel view: negatives corrupt the RELATION OR the TAIL ENTITY (50/50).
+
+Scoring (MVF paper):
+  S(h, r, t) = f(h, r_H) + f(t, r_T)    [no +1 for GFRT itself]
 
 L2 normalisation (MVF paper §3.3):
-  All embeddings are normalised to unit norm after each gradient step.
+  All embeddings normalised to unit norm after each gradient step.
 """
 
 from __future__ import annotations
@@ -58,25 +55,31 @@ class AttentionGNNLayer(nn.Module):
     """
     One message-passing layer handling all three edge types.
 
-    Entity nodes aggregate from:
-      - Relation neighbours via attention (er edges, W2 path)
-      - Entity neighbours via weighted mean (ee edges, W3 path)
+    Entity nodes (0..E-1):
+      - Attention over relation neighbours via er edges  → attn_agg (W2)
+      - Unweighted mean over similar entities via ee edges → mean_agg (W3)
 
-    Relation nodes aggregate from:
-      - Entity neighbours via mean (reverse er edges, W3 path)
-      - Relation neighbours via mean (rr edges, W3 path)
+    Relation nodes (E..E+R-1):
+      - Attention over entity neighbours via reverse er edges → attn_agg (W2)
+        (separate attention parameters η from entity attention ζ, per Eq. 10/18)
+      - Unweighted mean over similar relations via rr edges → mean_agg (W3)
 
-    Output:
-      out_i = tanh(W1·x_i) + tanh(W2·attn_agg_i) + tanh(W3·mean_agg_i)
+    Output: tanh(W1·x) + tanh(W2·attn_agg) + tanh(W3·mean_agg)
     """
 
     def __init__(self, embed_dim: int):
         super().__init__()
         self.embed_dim = embed_dim
-        # Attention parameters (entity ← relation)
-        self.W_attn = nn.Linear(2 * embed_dim, embed_dim, bias=True)
-        self.w0     = nn.Linear(embed_dim, 1, bias=True)
-        # Three separate transformation matrices (MVF Eq. 11/19)
+
+        # Entity-side attention: ζ_ij (entity h_i ← relation r_j, Eq. 10)
+        self.W_attn_e = nn.Linear(2 * embed_dim, embed_dim, bias=True)
+        self.w0       = nn.Linear(embed_dim, 1, bias=True)
+
+        # Relation-side attention: η_ij (relation r_i ← entity h_j, Eq. 18)
+        self.W_attn_r = nn.Linear(2 * embed_dim, embed_dim, bias=True)
+        self.w1       = nn.Linear(embed_dim, 1, bias=True)
+
+        # Three transformation matrices (shared across entity/relation node types)
         self.W1 = nn.Linear(embed_dim, embed_dim, bias=True)   # self
         self.W2 = nn.Linear(embed_dim, embed_dim, bias=True)   # attention agg
         self.W3 = nn.Linear(embed_dim, embed_dim, bias=True)   # mean agg
@@ -87,8 +90,7 @@ class AttentionGNNLayer(nn.Module):
         er_src:    Tensor,              # entity ids (head of er edges)
         er_dst:    Tensor,              # relation node ids (tail of er edges, offset by E)
         ee_src:    Optional[Tensor],    # entity-entity src
-        ee_dst:    Optional[Tensor],    # entity-entity dst (neighbours to aggregate from)
-        ee_weight: Optional[Tensor],    # entity-entity Jaccard weights
+        ee_dst:    Optional[Tensor],    # entity-entity dst (neighbours)
         rr_src:    Optional[Tensor],    # relation-relation src (offset by E)
         rr_dst:    Optional[Tensor],    # relation-relation dst (offset by E)
     ) -> Tensor:
@@ -97,43 +99,36 @@ class AttentionGNNLayer(nn.Module):
         mean_agg = torch.zeros_like(node_emb)
         mean_cnt = torch.zeros(N, device=node_emb.device)
 
-        # --- Entities aggregate from relation neighbours (attention, W2) ---
         if er_src.numel() > 0:
             h_emb = node_emb[er_src]   # entity embeddings
             r_emb = node_emb[er_dst]   # relation embeddings
 
-            pair = torch.cat([r_emb, h_emb], dim=-1)   # (E_edges, 2D)
-            e_ij = self.w0(torch.tanh(self.W_attn(pair))).squeeze(-1)  # (E_edges,)
-            attn = _segment_softmax(e_ij, er_src, N)   # (E_edges,)
+            # Entities aggregate from relation neighbours via attention (ζ, Eq. 10)
+            pair_e = torch.cat([r_emb, h_emb], dim=-1)          # [r_j; h_i]
+            e_ij   = self.w0(torch.tanh(self.W_attn_e(pair_e))).squeeze(-1)
+            attn_e = _segment_softmax(e_ij, er_src, N)
+            attn_agg.index_add_(0, er_src, attn_e.unsqueeze(-1) * r_emb)
 
-            # Aggregate relation messages → entity nodes
-            attn_agg.index_add_(0, er_src, attn.unsqueeze(-1) * r_emb)
+            # Relations aggregate from entity neighbours via attention (η, Eq. 18)
+            pair_r = torch.cat([h_emb, r_emb], dim=-1)          # [h_j; r_i]
+            e_ij_r = self.w1(torch.tanh(self.W_attn_r(pair_r))).squeeze(-1)
+            attn_r = _segment_softmax(e_ij_r, er_dst, N)
+            attn_agg.index_add_(0, er_dst, attn_r.unsqueeze(-1) * h_emb)
 
-        # --- Relations aggregate from entity neighbours (reverse er, mean, W3) ---
-        if er_src.numel() > 0:
-            e_msgs = node_emb[er_src]   # entity embeddings as messages
-            mean_agg.index_add_(0, er_dst, e_msgs)
-            mean_cnt.index_add_(0, er_dst, torch.ones(er_dst.size(0), device=node_emb.device))
-
-        # --- Entity-entity mean aggregation (weighted by Jaccard, W3) ---
+        # Entity-entity UNWEIGHTED mean (Eq. 11: 1/|S(h_i)| Σ h_k)
+        # Similarity scores select neighbours; they do NOT weight the aggregation.
         if ee_src is not None and ee_src.numel() > 0:
-            # ee_dst are the NEIGHBOURS to aggregate from (not self)
             neigh_emb = node_emb[ee_dst]
-            if ee_weight is not None:
-                w = ee_weight.unsqueeze(-1).to(node_emb.device)
-                mean_agg.index_add_(0, ee_src, w * neigh_emb)
-                mean_cnt.index_add_(0, ee_src, ee_weight.to(node_emb.device))
-            else:
-                mean_agg.index_add_(0, ee_src, neigh_emb)
-                mean_cnt.index_add_(0, ee_src, torch.ones(ee_src.size(0), device=node_emb.device))
+            mean_agg.index_add_(0, ee_src, neigh_emb)
+            mean_cnt.index_add_(0, ee_src, torch.ones(ee_src.size(0), device=node_emb.device))
 
-        # --- Relation-relation mean aggregation (W3) ---
+        # Relation-relation unweighted mean (Eq. 19: 1/|S(r_i)| Σ r_k)
         if rr_src is not None and rr_src.numel() > 0:
             rr_neigh = node_emb[rr_dst]
             mean_agg.index_add_(0, rr_src, rr_neigh)
             mean_cnt.index_add_(0, rr_src, torch.ones(rr_src.size(0), device=node_emb.device))
 
-        # Normalise mean aggregation by count
+        # Normalise mean by count
         safe_cnt = mean_cnt.clamp(min=1).unsqueeze(-1)
         mean_agg = mean_agg / safe_cnt
 
@@ -155,7 +150,7 @@ class IntraViewGNN(nn.Module):
     Produces entity embeddings v^e and relation embeddings v^r.
     """
 
-    def __init__(self, total_nodes: int, embed_dim: int = 64, num_layers: int = 2):
+    def __init__(self, total_nodes: int, embed_dim: int = 100, num_layers: int = 2):
         super().__init__()
         self.embed_dim = embed_dim
         self.node_emb  = nn.Embedding(total_nodes, embed_dim)
@@ -175,13 +170,12 @@ class IntraViewGNN(nn.Module):
         er_dst = graph.er_dst.to(device)
         ee_src = graph.ee_src.to(device) if graph.ee_src.numel() > 0 else None
         ee_dst = graph.ee_dst.to(device) if graph.ee_dst.numel() > 0 else None
-        ee_w   = graph.ee_weight.to(device) if graph.ee_weight.numel() > 0 else None
         rr_src = graph.rr_src.to(device) if graph.rr_src.numel() > 0 else None
         rr_dst = graph.rr_dst.to(device) if graph.rr_dst.numel() > 0 else None
 
         x = self.node_emb.weight.clone()
         for layer in self.layers:
-            x = layer(x, er_src, er_dst, ee_src, ee_dst, ee_w, rr_src, rr_dst)
+            x = layer(x, er_src, er_dst, ee_src, ee_dst, rr_src, rr_dst)
         return x  # (N_total, D)
 
 
@@ -203,8 +197,8 @@ class GFRTModel(nn.Module):
         self,
         num_entities:  int,
         num_relations: int,
-        embed_dim:     int = 64,
-        num_layers:    int = 2,
+        embed_dim:     int   = 100,
+        num_layers:    int   = 2,
         margin_intra:  float = 1.0,
     ):
         super().__init__()
@@ -232,16 +226,16 @@ class GFRTModel(nn.Module):
             t_emb:  (num_entities,  D) — entity embeddings from G_T
             rT_emb: (num_relations, D) — relation embeddings from G_T
         """
-        E = self.num_entities
-        xH = self.gnn_head(graph_H, device)   # (E+R, D)
-        xT = self.gnn_tail(graph_T, device)   # (E+R, D)
+        E  = self.num_entities
+        xH = self.gnn_head(graph_H, device)
+        xT = self.gnn_tail(graph_T, device)
         return xH[:E], xH[E:], xT[:E], xT[E:]
 
     @torch.no_grad()
     def normalize_embeddings(self) -> None:
         """
-        L2-normalise all node embeddings (entities + relations) in both GNNs.
-        Called after each optimizer step per MVF paper §3.3.
+        L2-normalise all node embeddings in both GNNs (MVF paper §3.3).
+        Call after each optimizer step.
         """
         for gnn in (self.gnn_head, self.gnn_tail):
             w = gnn.node_emb.weight
@@ -252,70 +246,75 @@ class GFRTModel(nn.Module):
         heads:     Tensor,   # (B,) head entity ids
         relations: Tensor,   # (B,) relation ids
         tails:     Tensor,   # (B,) tail entity ids
-        h_emb:     Tensor,   # (num_entities, D)
-        rH_emb:    Tensor,   # (num_relations, D)
-        t_emb:     Tensor,   # (num_entities, D)
-        rT_emb:    Tensor,   # (num_relations, D)
+        h_emb:     Tensor,
+        rH_emb:    Tensor,
+        t_emb:     Tensor,
+        rT_emb:    Tensor,
     ) -> Tensor:
         """
-        S(h, r, t) = f(h, r_H) + f(t, r_T) + 1
-        where f(x, y) = x · y  (MVF paper Eq. 15 and 23).
+        S(h, r, t) = f(h, r_H) + f(t, r_T)    (MVF paper Eq. 15 / 23)
+        where f(x, y) = x · y.
 
-        Returns:
-            scores: (B,) scalar scores.
+        Note: no +1 offset for GFRT itself (that appears only for RETA-filter
+        candidates in the paper's combined scoring formula).
+
+        Returns: (B,) scalar scores.
         """
         h_e  = h_emb[heads]
         rH_e = rH_emb[relations]
         t_e  = t_emb[tails]
         rT_e = rT_emb[relations]
-        return (h_e * rH_e).sum(dim=-1) + (t_e * rT_e).sum(dim=-1) + 1.0
+        return (h_e * rH_e).sum(dim=-1) + (t_e * rT_e).sum(dim=-1)
 
     def intra_loss(
         self,
-        pos_h:        Tensor,   # (B,) positive head entity ids
-        pos_r:        Tensor,   # (B,) positive relation ids
-        pos_t:        Tensor,   # (B,) positive tail entity ids
-        h_emb:        Tensor,
-        rH_emb:       Tensor,
-        t_emb:        Tensor,
-        rT_emb:       Tensor,
+        pos_h:         Tensor,   # (B,) positive head entity ids
+        pos_r:         Tensor,   # (B,) positive relation ids
+        pos_t:         Tensor,   # (B,) positive tail entity ids
+        h_emb:         Tensor,
+        rH_emb:        Tensor,
+        t_emb:         Tensor,
+        rT_emb:        Tensor,
         is_head_graph: bool = True,
     ) -> Tensor:
         """
-        Intra-view hinge loss.
+        Intra-view hinge loss (MVF paper Eq. 16 / 24).
 
-        Negatives are formed by CORRUPTING THE RELATION (not the entity),
-        as described in MVF paper Eq. (16) and (24).
-
-        For head-rel graph:
+        Head-rel view (Eq. 16):
+            Negative corrupts RELATION only.
             L_H = mean [γ + f(h, r'_H) - f(h, r_H)]_+
-        For tail-rel graph:
-            L_T = mean [γ + f(t, r'_T) - f(t, r_T)]_+
+
+        Tail-rel view (Eq. 24):
+            Negative corrupts RELATION OR TAIL ENTITY (50/50).
+            L_T = mean [γ + f(neg_t, neg_r_T) - f(t, r_T)]_+
         """
         if is_head_graph:
-            e_emb = h_emb
-            r_emb = rH_emb
-            pos_e = pos_h
+            # Corrupt relation only
+            neg_r = torch.randint(0, self.num_relations, pos_r.shape, device=pos_r.device)
+
+            pos_e_emb = h_emb[pos_h]
+            pos_score = (pos_e_emb * rH_emb[pos_r]).sum(dim=-1)
+            neg_score = (pos_e_emb * rH_emb[neg_r]).sum(dim=-1)
         else:
-            e_emb = t_emb
-            r_emb = rT_emb
-            pos_e = pos_t
+            # Corrupt relation OR tail entity (50/50)
+            B = pos_t.size(0)
+            corrupt_tail = torch.rand(B, device=pos_r.device) < 0.5
 
-        # Corrupt the relation
-        neg_r = torch.randint(0, self.num_relations, pos_r.shape, device=pos_r.device)
+            neg_r = torch.randint(0, self.num_relations, (B,), device=pos_r.device)
+            neg_t = torch.randint(0, self.num_entities,  (B,), device=pos_r.device)
 
-        pos_e_emb = e_emb[pos_e]
-        pos_r_emb = r_emb[pos_r]
-        neg_r_emb = r_emb[neg_r]
+            # When corrupt_tail: use (pos_r, neg_t); else: use (neg_r, pos_t)
+            eff_r = torch.where(corrupt_tail, pos_r, neg_r)
+            eff_t = torch.where(corrupt_tail, neg_t, pos_t)
 
-        pos_score = (pos_e_emb * pos_r_emb).sum(dim=-1)
-        neg_score = (pos_e_emb * neg_r_emb).sum(dim=-1)
+            pos_score = (t_emb[pos_t] * rT_emb[pos_r]).sum(dim=-1)
+            neg_score = (t_emb[eff_t] * rT_emb[eff_r]).sum(dim=-1)
 
         return F.relu(self.margin_intra + neg_score - pos_score).mean()
 
     def inter_view_loss(
         self,
-        aligned_entities: Tensor,  # (A,) entity ids appearing in both views
+        aligned_entities: Tensor,   # (A,) entity ids appearing in both views
         h_emb: Tensor,
         t_emb: Tensor,
     ) -> Tensor:
@@ -336,7 +335,7 @@ class GFRTModel(nn.Module):
 def find_aligned_entities(train_triples: torch.Tensor) -> torch.Tensor:
     """
     Find entities that appear as BOTH head AND tail in training triples.
-    These are the "aligned" entities E_A in both G_H and G_T.
+    These are the aligned entities E_A shared between G_H and G_T.
     """
     triples_np = train_triples.numpy() if isinstance(train_triples, torch.Tensor) else train_triples
     heads   = set(int(h) for h, r, t in triples_np)
@@ -351,12 +350,12 @@ def find_aligned_entities(train_triples: torch.Tensor) -> torch.Tensor:
 
 def _segment_softmax(values: Tensor, segment_ids: Tensor, num_segments: int) -> Tensor:
     """
-    Compute per-segment softmax for attention normalisation.
+    Per-segment softmax for attention normalisation.
 
     Args:
         values:       (E,) raw attention logits.
-        segment_ids:  (E,) segment membership (entity node id).
-        num_segments: total number of segments (nodes).
+        segment_ids:  (E,) segment membership (node id).
+        num_segments: total number of nodes.
 
     Returns:
         (E,) attention weights summing to 1 within each segment.
