@@ -35,6 +35,7 @@ L2 normalisation (MVF paper §3.3):
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -326,6 +327,37 @@ class GFRTModel(nn.Module):
         e_H = h_emb[aligned_entities]
         e_T = t_emb[aligned_entities]
         return (e_H - e_T).norm(p=2, dim=-1).mean()
+
+    def save(self, path: str) -> None:
+        """Serialize the model to disk using torch.save()."""
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        checkpoint = {
+            "model_state": self.state_dict(),
+            "num_entities": self.num_entities,
+            "num_relations": self.num_relations,
+            "embed_dim": self.embed_dim,
+            "num_layers": len(self.gnn_head.layers),
+            "margin_intra": self.margin_intra,
+        }
+        torch.save(checkpoint, path)
+        logger.info(f"GFRTModel saved → {path}")
+
+    @classmethod
+    def load(cls, path: str, device: Optional[torch.device] = None) -> "GFRTModel":
+        """Load a model saved by save()."""
+        device = device or torch.device("cpu")
+        checkpoint = torch.load(path, map_location=device)
+        model = cls(
+            num_entities=checkpoint["num_entities"],
+            num_relations=checkpoint["num_relations"],
+            embed_dim=checkpoint["embed_dim"],
+            num_layers=checkpoint["num_layers"],
+            margin_intra=checkpoint.get("margin_intra", 1.0),
+        ).to(device)
+        model.load_state_dict(checkpoint["model_state"])
+        model.eval()
+        logger.info(f"GFRTModel loaded ← {path}")
+        return model
 
 
 # ---------------------------------------------------------------------------

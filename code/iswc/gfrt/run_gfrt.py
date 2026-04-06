@@ -14,9 +14,8 @@ Usage
         --epochs 200 \\
         --embed-dim 64 \\
         --num-layers 2 \\
-        --top-m 20 \\
-        --top-n 100 \\
-        --candidate-budget 200
+        --k-r 250 \\
+        --k-t 15000 \\
 
     # Quick smoke-test
     python -m iswc.gfrt.run_gfrt \\
@@ -145,6 +144,8 @@ def main() -> None:
                         help="Directory to save results JSON.")
     parser.add_argument("--save-model",       type=str,   default=None,
                         help="Path to save the trained model checkpoint.")
+    parser.add_argument("--load-model",       type=str,   default=None,
+                        help="Path to load a previously saved model checkpoint (skips training).")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -156,8 +157,8 @@ def main() -> None:
     from pathe.kgloader import KgLoader
     kg = KgLoader(args.dataset)
 
-    train_triples: torch.Tensor = kg.train_triples
-    test_triples:  torch.Tensor = kg.test_no_inv
+    train_triples: torch.Tensor = kg.train
+    test_triples:  torch.Tensor = kg.test
     num_entities:  int          = kg.num_nodes_total
     num_relations: int          = kg.triple_factory.training.num_relations
 
@@ -184,7 +185,9 @@ def main() -> None:
     top_k1 = args.top_k1 if args.top_k1 is not None else (20  if is_umls else 100)
     top_k2 = args.top_k2 if args.top_k2 is not None else (10  if is_umls else 30)
     logger.info(f"  Graph construction: top_k1={top_k1}, top_k2={top_k2}")
+    args.candidate_budget = args.k_r * args.k_t
 
+    args.save_model = args.load_model = f'iswc_data/cache/models/gfrt_{args.dataset}.pt'
     # ── Build graphs and model ────────────────────────────────────────────────
     logger.info("Building GFRT graphs …")
     t0 = time.time()
@@ -211,36 +214,45 @@ def main() -> None:
         f"{graph_T.er_src.numel()} er-edges"
     )
 
-    # ── Train ─────────────────────────────────────────────────────────────────
-    logger.info(f"Training GFRT for {args.epochs} epochs …")
+    # ── Load or Train ─────────────────────────────────────────────────────────
+    if args.load_model and Path(args.load_model).exists():
+        logger.info(f"Loading model from {args.load_model} …")
+        model = GFRTModel.load(args.load_model, device=device)
+    else:
+        logger.info(f"Training GFRT for {args.epochs} epochs …")
+        trainer = GFRTTrainer(
+            model=model,
+            graph_H=graph_H,
+            graph_T=graph_T,
+            train_triples=train_triples,
+            device=device,
+            lr_intra=args.lr_intra,
+            lr_inter=args.lr_inter,
+        )
+
+        t0 = time.time()
+        for epoch in range(1, args.epochs + 1):
+            losses = trainer.train_epoch(batch_size=args.batch_size)
+            if epoch % args.log_every == 0 or epoch == 1:
+                logger.info(
+                    f"  Epoch {epoch:4d}/{args.epochs}  "
+                    f"L_H={losses['loss_H']:.4f}  "
+                    f"L_T={losses['loss_T']:.4f}  "
+                    f"L_cross={losses['loss_cross']:.4f}"
+                )
+
+        logger.info(f"  Training completed in {time.time()-t0:.1f}s")
+
+        if args.save_model:
+            model.save(args.save_model)
+
     trainer = GFRTTrainer(
         model=model,
         graph_H=graph_H,
         graph_T=graph_T,
         train_triples=train_triples,
         device=device,
-        lr_intra=args.lr_intra,
-        lr_inter=args.lr_inter,
     )
-
-    t0 = time.time()
-    for epoch in range(1, args.epochs + 1):
-        losses = trainer.train_epoch(batch_size=args.batch_size)
-        if epoch % args.log_every == 0 or epoch == 1:
-            logger.info(
-                f"  Epoch {epoch:4d}/{args.epochs}  "
-                f"L_H={losses['loss_H']:.4f}  "
-                f"L_T={losses['loss_T']:.4f}  "
-                f"L_cross={losses['loss_cross']:.4f}"
-            )
-
-    logger.info(f"  Training completed in {time.time()-t0:.1f}s")
-
-    if args.save_model:
-        ckpt_path = Path(args.save_model)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), ckpt_path)
-        logger.info(f"  Model saved to {ckpt_path}")
 
     # ── Generate candidates ───────────────────────────────────────────────────
     logger.info("Generating candidates for test entities …")
