@@ -172,6 +172,7 @@ class SJPAdapter(CandidateAdapter):
             check_val_every_n_epoch=1,
             patience=10,
             use_manual_optimization=True,
+            link_head_detached=False,
             accumulate_gradient=1,
             class_weights=False,
             phase1_rp_loss_fn="bce",
