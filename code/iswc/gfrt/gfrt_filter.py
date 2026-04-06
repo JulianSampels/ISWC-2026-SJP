@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # noqa: F401
 
 import torch
 import torch.optim as optim
 from torch import Tensor
 
-from .gfrt_graphs import GFRTGraph, build_head_relation_graph, build_tail_relation_graph, find_aligned_entities
-from .gfrt_model import GFRTModel
+from .gfrt_graphs import GFRTGraph, build_head_relation_graph, build_tail_relation_graph
+from .gfrt_model import GFRTModel, find_aligned_entities
 
 logger = logging.getLogger(__name__)
 
@@ -94,17 +94,14 @@ class GFRTTrainer:
         pos_r   = batch[:, 1]
         pos_t   = batch[:, 2]
 
-        # Negative sampling: corrupt head or tail
-        neg_h, neg_r, neg_t = self._negative_sample(pos_h, pos_r, pos_t)
-
-        # Intra-view losses
+        # Intra-view losses (negatives are relation-corrupted inside intra_loss)
         loss_H = self.model.intra_loss(
-            pos_h, pos_r, pos_t, neg_h, neg_r, neg_t,
+            pos_h, pos_r, pos_t,
             h_emb, rH_emb, t_emb, rT_emb,
             is_head_graph=True,
         )
         loss_T = self.model.intra_loss(
-            pos_h, pos_r, pos_t, neg_h, neg_r, neg_t,
+            pos_h, pos_r, pos_t,
             h_emb, rH_emb, t_emb, rT_emb,
             is_head_graph=False,
         )
@@ -122,22 +119,14 @@ class GFRTTrainer:
         loss_C.backward()
         self.opt_inter.step()
 
+        # L2-normalise all embeddings after each gradient step (MVF paper §3.3)
+        self.model.normalize_embeddings()
+
         return {
             "loss_H":    loss_H.item(),
             "loss_T":    loss_T.item(),
             "loss_cross": loss_C.item(),
         }
-
-    def _negative_sample(
-        self, pos_h: Tensor, pos_r: Tensor, pos_t: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        """Corrupt head or tail randomly."""
-        B = pos_h.size(0)
-        rand = torch.randint(0, self.model.num_entities, (B,), device=self.device)
-        mask = torch.rand(B, device=self.device) < 0.5
-        neg_h = torch.where(mask, rand, pos_h)
-        neg_t = torch.where(~mask, rand, pos_t)
-        return neg_h, pos_r.clone(), neg_t
 
     @torch.no_grad()
     def get_embeddings(self) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -217,10 +206,11 @@ class GFRTFilter:
         rel_scores = (h_e.unsqueeze(0) * self.rH_emb).sum(dim=-1)  # (R,)
         top_m_rels = rel_scores.topk(min(self.top_m, num_relations)).indices.tolist()
 
-        # Step 2: Top-n tail entities by f(t, h) = t_emb · h_emb (structural similarity)
-        # We use t_emb similarity to h_emb (in tail view) as a proxy for P(t | h)
-        tail_scores  = (h_e.unsqueeze(0) * self.t_emb).sum(dim=-1)  # (E,)
-        top_n_tails  = tail_scores.topk(min(self.top_n, num_entities)).indices.tolist()
+        # Step 2: Top-n tail entities using mean rT embedding of top-m relations as query.
+        # f(t, r_T) = t · r_T; query = mean(rT[top_m_rels]) aggregates relation context.
+        rT_query    = self.rT_emb[torch.tensor(top_m_rels, device=self.rT_emb.device)].mean(0)  # (D,)
+        tail_scores = (self.t_emb * rT_query.unsqueeze(0)).sum(dim=-1)   # (E,)
+        top_n_tails = tail_scores.topk(min(self.top_n, num_entities)).indices.tolist()
 
         # Step 3: Score all (r, t) combinations
         candidates: List[Tuple[int, int, int, float]] = []
