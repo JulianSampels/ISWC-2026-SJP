@@ -80,19 +80,15 @@ class GFRTTrainer:
         """
         self.model.train()
 
-        # Forward pass through both GNNs
+        # --- Intra-view pass ---
         h_emb, rH_emb, t_emb, rT_emb = self.model(
             self.graph_H, self.graph_T, self.device
         )
 
-        # Sample a batch of training triples
-        idx     = torch.randperm(len(self._train_np))[:batch_size]
-        batch   = self.train_triples[idx].to(self.device)
-        pos_h   = batch[:, 0]
-        pos_r   = batch[:, 1]
-        pos_t   = batch[:, 2]
+        idx   = torch.randperm(len(self._train_np))[:batch_size]
+        batch = self.train_triples[idx].to(self.device)
+        pos_h, pos_r, pos_t = batch[:, 0], batch[:, 1], batch[:, 2]
 
-        # Intra-view losses (negatives are relation-corrupted inside intra_loss)
         loss_H = self.model.intra_loss(
             pos_h, pos_r, pos_t,
             h_emb, rH_emb, t_emb, rT_emb,
@@ -104,15 +100,16 @@ class GFRTTrainer:
             is_head_graph=False,
         )
 
-        # Inter-view alignment loss
-        loss_C = self.model.inter_view_loss(self.aligned_entities, h_emb, t_emb)
-
-        # Step intra
         self.opt_intra.zero_grad()
-        (loss_H + loss_T).backward(retain_graph=True)
+        (loss_H + loss_T).backward()
         self.opt_intra.step()
 
-        # Step inter
+        # --- Inter-view pass (fresh forward after intra update) ---
+        # opt_intra.step() mutates embedding tensors in-place, so loss_C must
+        # be computed from a new forward pass to avoid stale graph errors.
+        h_emb2, _, t_emb2, _ = self.model(self.graph_H, self.graph_T, self.device)
+        loss_C = self.model.inter_view_loss(self.aligned_entities, h_emb2, t_emb2)
+
         self.opt_inter.zero_grad()
         loss_C.backward()
         self.opt_inter.step()
@@ -121,8 +118,8 @@ class GFRTTrainer:
         self.model.normalize_embeddings()
 
         return {
-            "loss_H":    loss_H.item(),
-            "loss_T":    loss_T.item(),
+            "loss_H":     loss_H.item(),
+            "loss_T":     loss_T.item(),
             "loss_cross": loss_C.item(),
         }
 

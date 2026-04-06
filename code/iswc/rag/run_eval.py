@@ -127,19 +127,19 @@ def build_gfrt_pipeline(args, llm, dataset_obj):
     Loads a trained GFRT checkpoint if it exists at --gfrt-model-dir/<dataset>.pt,
     otherwise trains from scratch and saves the checkpoint there.
     """
-    from .retrieval.gfrt_retriever import build_gfrt_retrievers
+    # from .retrieval.gfrt_retriever import build_gfrt_retrievers
     from .pipelines.gfrt_rag import GFRTRAGPipeline
     model_dir = Path(getattr(args, "gfrt_model_dir", "iswc_data/cache"))
 
-    retrievers = build_gfrt_retrievers(
-        dataset_obj=dataset_obj,
-        model_dir=str(model_dir),
-        device=str(getattr(args, "device", None) or "cpu"),
-        k_r=getattr(args, "gfrt_k_r", 20),
-        k_t=getattr(args, "gfrt_k_t", 100),
-        epochs=getattr(args, "gfrt_epochs", 100),
-    )
-    return GFRTRAGPipeline(retrievers=retrievers, llm=llm)
+    # retrievers = build_gfrt_retrievers(
+    #     dataset_obj=dataset_obj,
+    #     model_dir=str(model_dir),
+    #     device=str(getattr(args, "device", None) or "cpu"),
+    #     k_r=getattr(args, "gfrt_k_r", 20),
+    #     k_t=getattr(args, "gfrt_k_t", 100),
+    #     epochs=getattr(args, "gfrt_epochs", 100),
+    # )
+    return GFRTRAGPipeline(model_dir=model_dir, llm=llm)
 
 
 def build_sjp_pipeline(args, llm):

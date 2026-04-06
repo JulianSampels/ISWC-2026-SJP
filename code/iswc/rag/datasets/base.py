@@ -12,9 +12,6 @@ from pathlib import Path
 import logging
 from typing import List, Optional
 
-from pykeen.triples import TriplesFactory
-import numpy as np
-
 
 logger = logging.getLogger(__name__)
 
@@ -115,24 +112,3 @@ class QADataset(ABC):
     def __iter__(self) -> Iterator[QASample]:
         for i in range(len(self)):
             yield self[i]
-
-    def to_triple_factory(self, idx: int):
-        triples = []
-        # for sample in self._samples:
-        sample = self._samples[idx]
-        for triple in sample.graph:
-            if len(triple) != 3:
-                raise Exception("Invalid triples")
-                # if '.' not in triple[1]:
-                #     if '#' not in triple[1]:
-                #         print(triple)
-            h, r, t = triple
-            triples.append([str(h), str(r), str(t)])
-
-        logging.info(f"[{self.name}] triples: {len(triples)}")
-        triples = np.asarray(triples, dtype=str)
-        tf = TriplesFactory.from_labeled_triples(
-            triples=triples,
-            create_inverse_triples=False,
-        )
-        return tf
