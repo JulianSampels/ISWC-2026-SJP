@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import hashlib
@@ -374,27 +375,40 @@ def prepare_candidates(
         f"(head_batch_size={head_batch_size}, chunk_size={chunk_size}, max_candidates={max_candidates})…"
     )
 
-    for batch_start in tqdm(range(0, len(heads_todo), head_batch_size),
-                            desc="candidate batches", unit="batch"):
-        batch = heads_todo[batch_start : batch_start + head_batch_size]
+    save_executor = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+    save_futures: list[concurrent.futures.Future] = []
+
+    try:
+        for batch_start in tqdm(range(0, len(heads_todo), head_batch_size),
+                                desc="candidate batches", unit="batch"):
+            batch = heads_todo[batch_start : batch_start + head_batch_size]
+
+            t0 = time.time()
+            batch_results = pipeline.generate_candidates_batch(
+                batch,
+                max_candidates=max_candidates,
+                chunk_size=chunk_size,
+                num_workers=num_workers,
+            )
+            logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
+
+            cache_file = cache_dir / f'{_hash_heads(batch)}.parquet'
+            for h in batch:
+                metadata[h] = str(cache_file)
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+
+            # Dispatch save to background process — overlaps with all future generation
+            future = save_executor.submit(save_candidates, batch_results, cache_file)
+            save_futures.append(future)
+            logger.info(f"  Save dispatched asynchronously → {cache_file.name}")
+
+        # Wait for all saves to complete
         t0 = time.time()
-        batch_results = pipeline.generate_candidates_batch(
-            batch,
-            max_candidates=max_candidates,
-            chunk_size=chunk_size,
-            num_workers=num_workers,
-        )
-        logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
-
-        t0 = time.time()
-        cache_file = cache_dir / f'{_hash_heads(batch)}.parquet'
-        for h in batch:
-            metadata[h] = str(cache_file)
-
-        save_candidates(batch_results, cache_file)
-        metadata_file.write_text(json.dumps(metadata, indent=2))
-
-        logger.info(f"  Dump all candidate generation ready in {time.time()-t0:.1f}s")
+        for future in concurrent.futures.as_completed(save_futures):
+            future.result()  # re-raises any exception from the worker
+        logger.info(f"  All saves complete in {time.time()-t0:.1f}s")
+    finally:
+        save_executor.shutdown(wait=False)
 
     logger.info(f"  Candidate generation complete ({len(heads_todo)} heads).")
 
