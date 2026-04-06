@@ -333,7 +333,7 @@ def main(argv=None):
                              "Each graph subgraph is cached as graph_<hash>.pkl.")
 
     # --- GFRT model ---
-    parser.add_argument("--gfrt-model-dir", default="iswc_data/cache/models",
+    parser.add_argument("--gfrt-model-dir", default="iswc_data/cache",
                         help="Directory to save/load GFRT model checkpoints "
                              "(saved as gfrt_<dataset>.pt).")
     parser.add_argument("--gfrt-k-r", type=int, default=20,

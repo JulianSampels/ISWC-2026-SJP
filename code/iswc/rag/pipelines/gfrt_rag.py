@@ -54,7 +54,6 @@ class GFRTRAGPipeline(BaseRAGPipeline):
         all_triples = []
         seen = set()
         retriever = build_gfrt_retriever(sample, model_dir=self.model_dir)
-        import ipdb; ipdb.set_trace()
         for entity in sample.topic_entities:
             for triple in retriever.retrieve(entity, budget=budget):
                 key = (triple.head, triple.relation, triple.tail)
@@ -184,7 +183,7 @@ def build_gfrt_retriever(
     )
 
     # ── Load or train ─────────────────────────────────────────────────────────
-    model_path = Path(model_dir) / "rag/models" / f"gfrt_{sample.question_id.lower()}.pt"
+    model_path = Path(model_dir) / "rag/models" / f"gfrt_r{k_r}_t{k_t}_epochs{epochs}_{sample.question_id.lower()}.pt"
     if model_path.exists():
         logger.info("Loading GFRT model from %s", model_path)
         model = GFRTModel.load(str(model_path), device=torch_device)
