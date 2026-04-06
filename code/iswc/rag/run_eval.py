@@ -104,13 +104,13 @@ def build_llm(args, dataset_name: str = "", pipeline_name: str = ""):
     return UtilsLLM(model_name=args.model, cache_dir=cache_dir)
 
 
-def build_native_pipeline(args, llm, dataset_name: str = ""):
+def build_native_pipeline(args, llm, dataset_obj):
     """Build the native (embedding cosine-similarity) RAG pipeline."""
     from .retrieval.embedding_retriever import EmbeddingRetriever
     from .pipelines.native_rag import NativeRAGPipeline
 
     # Auto-construct cache dir: iswc_data/cache/rag/emb/<dataset>
-    cache_dir = Path("iswc_data/cache/rag/emb") / dataset_name
+    cache_dir = Path("iswc_data/cache/rag/emb") / dataset_obj.name
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     retriever = EmbeddingRetriever(
@@ -119,6 +119,27 @@ def build_native_pipeline(args, llm, dataset_name: str = ""):
         cache_dir=str(cache_dir),
     )
     return NativeRAGPipeline(retriever=retriever, llm=llm)
+
+
+def build_gfrt_pipeline(args, llm, dataset_obj):
+    """Build the GFRT-enhanced RAG pipeline.
+
+    Loads a trained GFRT checkpoint if it exists at --gfrt-model-dir/<dataset>.pt,
+    otherwise trains from scratch and saves the checkpoint there.
+    """
+    from .retrieval.gfrt_retriever import build_gfrt_retrievers
+    from .pipelines.gfrt_rag import GFRTRAGPipeline
+    model_dir = Path(getattr(args, "gfrt_model_dir", "iswc_data/cache"))
+
+    retrievers = build_gfrt_retrievers(
+        dataset_obj=dataset_obj,
+        model_dir=str(model_dir),
+        device=str(getattr(args, "device", None) or "cpu"),
+        k_r=getattr(args, "gfrt_k_r", 20),
+        k_t=getattr(args, "gfrt_k_t", 100),
+        epochs=getattr(args, "gfrt_epochs", 100),
+    )
+    return GFRTRAGPipeline(retrievers=retrievers, llm=llm)
 
 
 def build_sjp_pipeline(args, llm):
@@ -286,8 +307,8 @@ def main(argv=None):
                         help="Limit evaluation to this many samples (for fast tests).")
 
     # --- Pipeline selection ---
-    parser.add_argument("--pipeline", choices=["native", "sjp", "both"], default="both",
-                        help="Which pipeline(s) to run.")
+    parser.add_argument("--pipeline", choices=["native", "sjp", "gfrt", "both", "all"], default="both",
+                        help="Which pipeline(s) to run. 'both'=native+sjp, 'all'=native+sjp+gfrt.")
 
     # --- LLM ---
     parser.add_argument("--model", default="ollama-qwen3-8b",
@@ -310,6 +331,17 @@ def main(argv=None):
                         help="Override the default embedding cache directory. "
                              "Default: iswc_data/cache/rag/emb/<dataset>. "
                              "Each graph subgraph is cached as graph_<hash>.pkl.")
+
+    # --- GFRT model ---
+    parser.add_argument("--gfrt-model-dir", default="iswc_data/cache/models",
+                        help="Directory to save/load GFRT model checkpoints "
+                             "(saved as gfrt_<dataset>.pt).")
+    parser.add_argument("--gfrt-k-r", type=int, default=20,
+                        help="Top-k relations per head for GFRT candidate generation.")
+    parser.add_argument("--gfrt-k-t", type=int, default=100,
+                        help="Top-k tails per (head, relation) for GFRT candidate generation.")
+    parser.add_argument("--gfrt-epochs", type=int, default=100,
+                        help="Training epochs for GFRT (ignored when loading from checkpoint).")
 
     # --- SJP model (optional; enables real model instead of placeholder) ---
     parser.add_argument("--sjp-checkpoint", default=None,
@@ -342,9 +374,12 @@ def main(argv=None):
         ["webqsp", "cwq"] if args.dataset == "both" else [args.dataset]
     )
     # Pipelines to run
-    pipelines_to_run = (
-        ["native", "sjp"] if args.pipeline == "both" else [args.pipeline]
-    )
+    if args.pipeline == "both":
+        pipelines_to_run = ["native", "sjp"]
+    elif args.pipeline == "all":
+        pipelines_to_run = ["native", "sjp", "gfrt"]
+    else:
+        pipelines_to_run = [args.pipeline]
 
     from .evaluation.metrics import format_metrics_table
 
@@ -362,11 +397,13 @@ def main(argv=None):
             logger.info("── Pipeline: %s ──", pipe_name)
             # Each (dataset, pipeline) pair gets its own LLM cache directory
             llm = build_llm(args, dataset_name=ds_name, pipeline_name=pipe_name)
-            pipeline = (
-                build_native_pipeline(args, llm, dataset_name=ds_name)
-                if pipe_name == "native"
-                else build_sjp_pipeline(args, llm)
-            )
+            if pipe_name == "native":
+                pipeline = build_native_pipeline(args, llm, dataset_obj=dataset_obj)
+            elif pipe_name == "gfrt":
+                # pipeline = build_gfrt_pipeline(args, llm, dataset_name=ds_name)
+                pipeline = build_gfrt_pipeline(args, llm, dataset_obj=dataset_obj)
+            else:
+                pipeline = build_sjp_pipeline(args, llm)
             raw = run_pipeline_on_dataset(pipeline, dataset_obj, args)
             agg = evaluate_and_report(pipe_name, raw, args.output_dir, ds_name, args.split, budget=args.budget)
             agg_by_pipeline[pipe_name] = agg
