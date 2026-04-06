@@ -24,6 +24,7 @@ Reference: TODO.org §RQ3 and paper_outline §6.3.
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -52,6 +53,9 @@ class MetricResults:
     # Entity-level metrics
     entity_hit_at_k:      Dict[int, float] = field(default_factory=dict)
     entity_recall_at_k:   Dict[int, float] = field(default_factory=dict)
+    ndcg_at_k:            Dict[int, float] = field(default_factory=dict)
+    ndcg:                 float = 0.0   # NDCG over full ranked list (macro, per-entity)
+    map:                  float = 0.0   # mean average precision (macro, per-entity)
     budget_to_first_hit:  float = 0.0
     budget_to_first_hit_coverage: float = 0.0  # fraction of entities where ≥1 hit exists
 
@@ -157,6 +161,63 @@ def recall_at_k_tuple(
     return hits_at_k_tuple(ranked_facts, gold_facts, k)
 
 
+def average_precision(
+    ranked_facts: List[Tuple[int, int]],
+    gold_facts:   Set[Tuple[int, int]],
+) -> float:
+    """
+    Average Precision (AP) for a single anchor entity.
+
+    AP = (1 / |G(h)|) * sum_{i: ranked_facts[i] in G(h)} P@i
+    where P@i = (number of gold facts in top-i) / i.
+
+    Equivalent to the area under the precision-recall curve.
+    Returns 0.0 if gold_facts is empty or no gold fact is ranked.
+    """
+    if not gold_facts:
+        return 0.0
+    n_rel_seen, ap = 0, 0.0
+    for i, fact in enumerate(ranked_facts, start=1):
+        if fact in gold_facts:
+            n_rel_seen += 1
+            ap += n_rel_seen / i
+    return ap / len(gold_facts)
+
+
+def ndcg_at_k(
+    ranked_facts: List[Tuple[int, int]],
+    gold_facts:   Set[Tuple[int, int]],
+    k: int,
+) -> float:
+    """
+    Normalised Discounted Cumulative Gain at K for a single anchor entity.
+
+    DCG@K  = sum_{i=1}^{K} rel_i / log2(i + 1)   where rel_i ∈ {0, 1}
+    IDCG@K = sum_{i=1}^{min(|G|,K)} 1 / log2(i + 1)   (ideal ranking)
+    NDCG@K = DCG@K / IDCG@K
+
+    Returns 0.0 if gold_facts is empty.
+    """
+    if not gold_facts:
+        return 0.0
+    dcg  = sum(1.0 / math.log2(i + 2) for i, f in enumerate(ranked_facts[:k]) if f in gold_facts)
+    idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(gold_facts), k)))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+def ndcg(
+    ranked_facts: List[Tuple[int, int]],
+    gold_facts:   Set[Tuple[int, int]],
+) -> float:
+    """
+    Normalised Discounted Cumulative Gain over the full ranked list.
+
+    Equivalent to ndcg_at_k with k = len(ranked_facts).
+    Returns 0.0 if gold_facts is empty.
+    """
+    return ndcg_at_k(ranked_facts, gold_facts, len(ranked_facts))
+
+
 # ---------------------------------------------------------------------------
 # Batch evaluation
 # ---------------------------------------------------------------------------
@@ -198,9 +259,12 @@ def evaluate_entity_centric(
 
     e_hit:       Dict[int, List[float]] = {k: [] for k in k_values}
     e_recall:    Dict[int, List[float]] = {k: [] for k in k_values}
+    e_ndcg:      Dict[int, List[float]] = {k: [] for k in k_values}
     r_at_k:      Dict[int, List[float]] = {k: [] for k in k_values}
 
     b2fh_vals:   List[float] = []
+    map_vals:    List[float] = []
+    ndcg_vals:   List[float] = []
     cand_sizes:  List[int]   = []
     covered:     int         = 0
     total_gold:  int         = 0
@@ -228,9 +292,12 @@ def evaluate_entity_centric(
         for k in k_values:
             e_hit[k].append(entity_hit_at_k(ranked, gold, k))
             e_recall[k].append(entity_recall_at_k(ranked, gold, k))
+            e_ndcg[k].append(ndcg_at_k(ranked, gold, k))
             r_at_k[k].append(recall_at_k_tuple(ranked, gold, k))
 
-        # --- Budget-to-First-Hit ---
+        # --- MAP, NDCG (full), and Budget-to-First-Hit ---
+        map_vals.append(average_precision(ranked, gold))
+        ndcg_vals.append(ndcg(ranked, gold))
         b2fh = budget_to_first_hit(ranked, gold)
         if b2fh is not None:
             b2fh_vals.append(float(b2fh))
@@ -246,8 +313,11 @@ def evaluate_entity_centric(
         hits_at_3  = _mean(h3_vals),
         hits_at_10 = _mean(h10_vals),
         recall_at_k = {k: _mean(r_at_k[k]) for k in k_values},
-        entity_hit_at_k    = {k: _mean(e_hit[k]) for k in k_values},
+        entity_hit_at_k    = {k: _mean(e_hit[k])   for k in k_values},
         entity_recall_at_k = {k: _mean(e_recall[k]) for k in k_values},
+        ndcg_at_k          = {k: _mean(e_ndcg[k])  for k in k_values},
+        ndcg               = _mean(ndcg_vals),
+        map                = _mean(map_vals),
         budget_to_first_hit          = _mean(b2fh_vals),
         budget_to_first_hit_coverage = len(b2fh_vals) / len(test_heads) if test_heads else 0.0,
         avg_candidate_size = _mean([float(s) for s in cand_sizes]),

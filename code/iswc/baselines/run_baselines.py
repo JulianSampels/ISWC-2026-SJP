@@ -11,14 +11,16 @@ For each head entity h in the test set:
     - Ground truth: all (r, t) pairs in test_triples with that head
     - Pipeline generates top-N ranked (h, r, t) candidates
 
-Metrics reported:
-    Hits@K    — fraction of gold triples appearing in top-K (micro, per-triple)
-    Recall@K  — fraction of gold triples found in top-K (macro, per-entity)
-    NDCG@K    — normalised discounted cumulative gain at K (macro, per-entity)
-    NDCG      — normalised discounted cumulative gain over full ranked list (macro, per-entity)
-    MAP       — mean average precision (macro, per-entity)
-    MRR       — mean reciprocal rank (micro, per-triple)
-    Coverage@S — fraction of entities with ≥1 gold triple in top-S candidates
+Metrics reported (all macro-averaged — each entity weighted equally):
+    EntityHit@K    — fraction of entities with ≥1 gold fact in top-K
+    EntityRecall@K — fraction of gold facts recovered in top-K per entity
+    NDCG@K         — normalised discounted cumulative gain at K
+    NDCG           — normalised discounted cumulative gain over full ranked list
+    MAP            — mean average precision
+    MRR            — mean reciprocal rank over per-entity gold facts
+    B2FH           — mean budget-to-first-hit (over entities with ≥1 hit)
+    B2FH-Coverage  — fraction of entities where any gold fact is found
+    Coverage@S     — EntityHit@S for large S (candidate retrieval quality)
 
 Usage
 -----
@@ -46,7 +48,6 @@ import concurrent.futures
 import json
 import logging
 import hashlib
-import math
 import multiprocessing as mp
 import pickle
 import sys
@@ -79,6 +80,15 @@ from iswc.baselines import (
     RecoinRelationPredictor,
     PyKEENTrainer,
     InstanceCompletionPipeline,
+)
+from iswc.evaluation.entity_metrics import (
+    entity_hit_at_k      as _entity_hit_at_k,
+    entity_recall_at_k   as _entity_recall_at_k,
+    ndcg_at_k            as _ndcg_at_k,
+    ndcg                 as _ndcg,
+    mean_reciprocal_rank as _mean_reciprocal_rank,
+    average_precision    as _average_precision,
+    budget_to_first_hit  as _budget_to_first_hit,
 )
 
 logging.basicConfig(
@@ -187,42 +197,46 @@ def _load_eval_checkpoint(path: Path) -> Optional[Dict]:
 
 def _accumulators_to_state(
     batch_start: int,
-    hits: Dict, recall_sum: Dict, ndcg_sum: Dict,
-    coverage: Dict, rr_sum: float, map_sum: float,
-    ndcg_full_sum: float,
+    entity_hit_sum: Dict, entity_recall_sum: Dict, ndcg_sum: Dict,
+    coverage: Dict, mrr_sum: float, map_sum: float,
+    ndcg_full_sum: float, b2fh_sum: float, b2fh_count: int,
     n_triples: int, n_heads_evaluated: int,
     k_values: Tuple, coverage_sizes: Tuple,
 ) -> Dict:
     """Serialise accumulator dicts (int keys → str for JSON)."""
     return {
-        "batch_start":       batch_start,
-        "hits":              {str(k): v for k, v in hits.items()},
-        "recall_sum":        {str(k): v for k, v in recall_sum.items()},
-        "ndcg_sum":          {str(k): v for k, v in ndcg_sum.items()},
-        "coverage":          {str(s): v for s, v in coverage.items()},
-        "rr_sum":            rr_sum,
-        "map_sum":           map_sum,
-        "ndcg_full_sum":     ndcg_full_sum,
-        "n_triples":         n_triples,
-        "n_heads_evaluated": n_heads_evaluated,
-        "k_values":          list(k_values),
-        "coverage_sizes":    list(coverage_sizes),
+        "batch_start":        batch_start,
+        "entity_hit_sum":     {str(k): v for k, v in entity_hit_sum.items()},
+        "entity_recall_sum":  {str(k): v for k, v in entity_recall_sum.items()},
+        "ndcg_sum":           {str(k): v for k, v in ndcg_sum.items()},
+        "coverage":           {str(s): v for s, v in coverage.items()},
+        "mrr_sum":            mrr_sum,
+        "map_sum":            map_sum,
+        "ndcg_full_sum":      ndcg_full_sum,
+        "b2fh_sum":           b2fh_sum,
+        "b2fh_count":         b2fh_count,
+        "n_triples":          n_triples,
+        "n_heads_evaluated":  n_heads_evaluated,
+        "k_values":           list(k_values),
+        "coverage_sizes":     list(coverage_sizes),
     }
 
 
 def _state_to_accumulators(state: Dict, k_values: Tuple, coverage_sizes: Tuple) -> Dict:
     """Restore accumulator dicts from a checkpoint (str keys → int)."""
     return {
-        "batch_start":       state["batch_start"],
-        "hits":              {int(k): v for k, v in state["hits"].items()},
-        "recall_sum":        {int(k): v for k, v in state["recall_sum"].items()},
-        "ndcg_sum":          {int(k): v for k, v in state["ndcg_sum"].items()},
-        "coverage":          {int(s): v for s, v in state["coverage"].items()},
-        "rr_sum":            state["rr_sum"],
-        "map_sum":           state["map_sum"],
-        "ndcg_full_sum":     state.get("ndcg_full_sum", 0.0),
-        "n_triples":         state["n_triples"],
-        "n_heads_evaluated": state["n_heads_evaluated"],
+        "batch_start":        state["batch_start"],
+        "entity_hit_sum":     {int(k): v for k, v in state["entity_hit_sum"].items()},
+        "entity_recall_sum":  {int(k): v for k, v in state["entity_recall_sum"].items()},
+        "ndcg_sum":           {int(k): v for k, v in state["ndcg_sum"].items()},
+        "coverage":           {int(s): v for s, v in state["coverage"].items()},
+        "mrr_sum":            state["mrr_sum"],
+        "map_sum":            state["map_sum"],
+        "ndcg_full_sum":      state["ndcg_full_sum"],
+        "b2fh_sum":           state["b2fh_sum"],
+        "b2fh_count":         state["b2fh_count"],
+        "n_triples":          state["n_triples"],
+        "n_heads_evaluated":  state["n_heads_evaluated"],
     }
 
 
@@ -252,80 +266,41 @@ def _eval_one_head(args: Tuple) -> Dict:
     k_values       = _eval_k_values
     coverage_sizes = _eval_coverage_sizes
 
-    max_k  = max(k_values)
-    n_gold = len(gold)
+    n_gold  = len(gold)
+    # Convert 4-tuple candidates to ranked (r, t) list (deduplicated, order preserved)
+    seen: set = set()
+    ranked: List[Tuple[int, int]] = []
+    for _, r, t, _ in candidates:
+        if (r, t) not in seen:
+            seen.add((r, t))
+            ranked.append((r, t))
 
-    # rank_of: (r, t) → 1-indexed position in the candidate list
-    rank_of: Dict[Tuple[int, int], int] = {}
-    for rank, (_, r, t, _) in enumerate(candidates, start=1):
-        rt = (r, t)
-        if rt not in rank_of:
-            rank_of[rt] = rank
+    # Entity-level metrics (macro) — from entity_metrics
+    entity_hit    = {k: _entity_hit_at_k(ranked, gold, k)    for k in k_values}
+    entity_recall = {k: _entity_recall_at_k(ranked, gold, k) for k in k_values}
+    mrr           = _mean_reciprocal_rank(ranked, gold)
+    b2fh          = _budget_to_first_hit(ranked, gold)   # int or None
 
-    # Hits@K and MRR
-    hits       = {k: 0 for k in k_values}
-    rr         = 0.0
-    n_triples  = 0
-    for r, t in gold:
-        n_triples += 1
-        rank = rank_of.get((r, t))
-        if rank is not None:
-            for k in k_values:
-                if rank <= k:
-                    hits[k] += 1
-            rr += 1.0 / rank
+    # NDCG@K and NDCG (full list) — from entity_metrics
+    ndcg_k    = {k: _ndcg_at_k(ranked, gold, k) for k in k_values}
+    ndcg_full = _ndcg(ranked, gold)
 
-    # Recall@K
-    recall = {
-        k: sum(1 for rt in gold if rank_of.get(rt, max_k + 1) <= k) / n_gold
-        for k in k_values
-    }
+    # MAP — from entity_metrics
+    map_val = _average_precision(ranked, gold)
 
-    # NDCG@K
-    ndcg = {}
-    for k in k_values:
-        dcg = sum(
-            1.0 / math.log2(rank + 1)
-            for rank, (_, r, t, _) in enumerate(candidates[:k], start=1)
-            if (r, t) in gold
-        )
-        idcg = sum(1.0 / math.log2(i + 2) for i in range(min(n_gold, k)))
-        ndcg[k] = dcg / idcg if idcg > 0 else 0.0
-
-    # NDCG (full list)
-    n_cands = len(candidates)
-    dcg_full = sum(
-        1.0 / math.log2(rank + 1)
-        for rank, (_, r, t, _) in enumerate(candidates, start=1)
-        if (r, t) in gold
-    )
-    idcg_full = sum(1.0 / math.log2(i + 2) for i in range(min(n_gold, n_cands)))
-    ndcg_full = dcg_full / idcg_full if idcg_full > 0 else 0.0
-
-    # MAP
-    n_rel_seen, ap = 0, 0.0
-    for rank, (_, r, t, _) in enumerate(candidates, start=1):
-        if (r, t) in gold:
-            n_rel_seen += 1
-            ap += n_rel_seen / rank
-    map_val = ap / n_gold
-
-    # Coverage@S
-    min_rank = min((rank_of[rt] for rt in gold if rt in rank_of), default=None)
-    coverage = {
-        s: int(min_rank is not None and min_rank <= s)
-        for s in coverage_sizes
-    }
+    # Coverage@S — entity_hit at coverage_sizes (same definition, separate size list)
+    coverage = {s: _entity_hit_at_k(ranked, gold, s) for s in coverage_sizes}
 
     return {
-        "hits":      hits,
-        "recall":    recall,
-        "ndcg":      ndcg,
-        "ndcg_full": ndcg_full,
-        "map":       map_val,
-        "rr":        rr,
-        "coverage":  coverage,
-        "n_triples": n_triples,
+        "entity_hit":    entity_hit,
+        "entity_recall": entity_recall,
+        "ndcg":          ndcg_k,
+        "ndcg_full":     ndcg_full,
+        "map":           map_val,
+        "mrr":           mrr,
+        "b2fh":          b2fh,
+        "coverage":      coverage,
+        "n_triples":     n_gold,
     }
 
 
@@ -433,17 +408,23 @@ def evaluate_pipeline(
     disk), then loaded per-head for metric computation.  Heads whose cache
     file is missing after generation are skipped gracefully.
 
-    Hits@K     — fraction of gold triples with rank ≤ K   (micro, per-triple)
-    Recall@K   — fraction of gold triples found in top-K  (macro, per-entity)
-    NDCG@K     — normalised DCG at K                      (macro, per-entity)
-    MAP        — mean average precision                    (macro, per-entity)
-    MRR        — mean reciprocal rank                      (micro, per-triple)
-    Coverage@S — fraction of entities where ≥1 gold triple has rank ≤ S
+    All metrics are macro-averaged (each entity weighted equally), using
+    entity_metrics.py as the authoritative implementation.
+
+    EntityHit@K    — fraction of entities with ≥1 gold in top-K       (macro)
+    EntityRecall@K — fraction of gold facts recovered in top-K         (macro)
+    NDCG@K         — normalised DCG at K                               (macro)
+    NDCG           — normalised DCG over full ranked list               (macro)
+    MAP            — mean average precision                             (macro)
+    MRR            — mean reciprocal rank over gold facts per entity    (macro)
+    B2FH           — mean budget-to-first-hit (entities with ≥1 hit)  (macro)
+    B2FH-Coverage  — fraction of entities where ≥1 gold is found
+    Coverage@S     — same as EntityHit@S for large S values
 
     Returns
     -------
-    Dict with keys hits@K, recall@K, ndcg@K, map, mrr, coverage@S,
-    n_triples, n_heads.
+    Dict with keys entity_hit@K, entity_recall@K, ndcg@K, ndcg, map, mrr,
+    b2fh, b2fh_coverage, coverage@S, n_triples, n_heads.
     """
     # prepare_candidates(
     #     pipeline, test_heads, ground_truth, cache_dir,
@@ -460,16 +441,18 @@ def evaluate_pipeline(
 
     if ckpt and ckpt.get("k_values") == list(k_values) \
              and ckpt.get("coverage_sizes") == list(coverage_sizes):
-        restored      = _state_to_accumulators(ckpt, k_values, coverage_sizes)
-        resume_from   = restored["batch_start"]
-        hits          = restored["hits"]
-        recall_sum    = restored["recall_sum"]
-        ndcg_sum      = restored["ndcg_sum"]
-        coverage      = restored["coverage"]
-        rr_sum        = restored["rr_sum"]
-        map_sum       = restored["map_sum"]
-        ndcg_full_sum = restored["ndcg_full_sum"]
-        n_triples     = restored["n_triples"]
+        restored          = _state_to_accumulators(ckpt, k_values, coverage_sizes)
+        resume_from       = restored["batch_start"]
+        entity_hit_sum    = restored["entity_hit_sum"]
+        entity_recall_sum = restored["entity_recall_sum"]
+        ndcg_sum          = restored["ndcg_sum"]
+        coverage          = restored["coverage"]
+        mrr_sum           = restored["mrr_sum"]
+        map_sum           = restored["map_sum"]
+        ndcg_full_sum     = restored["ndcg_full_sum"]
+        b2fh_sum          = restored["b2fh_sum"]
+        b2fh_count        = restored["b2fh_count"]
+        n_triples         = restored["n_triples"]
         n_heads_evaluated = restored["n_heads_evaluated"]
         logger.info(
             f"  Resuming evaluation from batch {resume_from} "
@@ -481,13 +464,15 @@ def evaluate_pipeline(
                 "  Checkpoint found but k_values/coverage_sizes differ — starting fresh."
             )
         resume_from       = 0
-        hits              = {k: 0   for k in k_values}
-        recall_sum        = {k: 0.0 for k in k_values}
+        entity_hit_sum    = {k: 0.0 for k in k_values}
+        entity_recall_sum = {k: 0.0 for k in k_values}
         ndcg_sum          = {k: 0.0 for k in k_values}
-        coverage          = {s: 0   for s in coverage_sizes}
-        rr_sum            = 0.0
+        coverage          = {s: 0.0 for s in coverage_sizes}
+        mrr_sum           = 0.0
         map_sum           = 0.0
         ndcg_full_sum     = 0.0
+        b2fh_sum          = 0.0
+        b2fh_count        = 0
         n_triples         = 0
         n_heads_evaluated = 0
 
@@ -536,12 +521,15 @@ def evaluate_pipeline(
             # ── Aggregate partial results ──────────────────────────────────────
             for pr in partial_results:
                 for k in k_values:
-                    hits[k]       += pr["hits"][k]
-                    recall_sum[k] += pr["recall"][k]
-                    ndcg_sum[k]   += pr["ndcg"][k]
+                    entity_hit_sum[k]    += pr["entity_hit"][k]
+                    entity_recall_sum[k] += pr["entity_recall"][k]
+                    ndcg_sum[k]          += pr["ndcg"][k]
                 map_sum       += pr["map"]
-                rr_sum        += pr["rr"]
+                mrr_sum       += pr["mrr"]
                 ndcg_full_sum += pr["ndcg_full"]
+                if pr["b2fh"] is not None:
+                    b2fh_sum   += pr["b2fh"]
+                    b2fh_count += 1
                 for s in coverage_sizes:
                     coverage[s] += pr["coverage"][s]
                 n_triples         += pr["n_triples"]
@@ -553,8 +541,9 @@ def evaluate_pipeline(
             next_batch_start = batch_start + head_batch_size
             _save_eval_checkpoint(ckpt_path, _accumulators_to_state(
                 next_batch_start,
-                hits, recall_sum, ndcg_sum, coverage,
-                rr_sum, map_sum, ndcg_full_sum, n_triples, n_heads_evaluated,
+                entity_hit_sum, entity_recall_sum, ndcg_sum, coverage,
+                mrr_sum, map_sum, ndcg_full_sum, b2fh_sum, b2fh_count,
+                n_triples, n_heads_evaluated,
                 k_values, coverage_sizes,
             ))
 
@@ -570,16 +559,17 @@ def evaluate_pipeline(
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
     n_h = n_heads_evaluated or 1
-    n_t = n_triples or 1
 
     metrics: Dict[str, float] = {}
     for k in k_values:
-        metrics[f"hits@{k}"]   = hits[k]       / n_t
-        metrics[f"recall@{k}"] = recall_sum[k] / n_h
-        metrics[f"ndcg@{k}"]   = ndcg_sum[k]   / n_h
-    metrics["map"]       = map_sum       / n_h
-    metrics["mrr"]       = rr_sum        / n_t
-    metrics["ndcg"]      = ndcg_full_sum / n_h
+        metrics[f"entity_hit@{k}"]    = entity_hit_sum[k]    / n_h
+        metrics[f"entity_recall@{k}"] = entity_recall_sum[k] / n_h
+        metrics[f"ndcg@{k}"]          = ndcg_sum[k]          / n_h
+    metrics["ndcg"]         = ndcg_full_sum / n_h
+    metrics["map"]          = map_sum       / n_h
+    metrics["mrr"]          = mrr_sum       / n_h   # macro: each entity weighted equally
+    metrics["b2fh"]         = b2fh_sum / b2fh_count if b2fh_count > 0 else float("inf")
+    metrics["b2fh_coverage"] = b2fh_count / n_h
     for s in coverage_sizes:
         metrics[f"coverage@{s}"] = coverage[s] / n_h
     metrics["n_triples"] = float(n_triples)
@@ -595,18 +585,18 @@ def format_results_table(
     # Show a representative subset; the full dict is in the JSON output.
     show_k = [k for k in (1, 10, 50) if k in k_values]
     col_keys = (
-        [f"hits@{k}"     for k in show_k] +
-        [f"recall@{k}"   for k in show_k] +
-        [f"ndcg@{k}"     for k in show_k] +
-        ["ndcg", "map", "mrr"] +
+        [f"entity_hit@{k}"    for k in show_k] +
+        [f"entity_recall@{k}" for k in show_k] +
+        [f"ndcg@{k}"          for k in show_k] +
+        ["ndcg", "map", "mrr", "b2fh", "b2fh_coverage"] +
         [f"coverage@{s}" for s in coverage_sizes] +
         ["n_triples"]
     )
     col_hdrs = (
-        [f"H@{k}"    for k in show_k] +
-        [f"R@{k}"    for k in show_k] +
-        [f"nDCG@{k}" for k in show_k] +
-        ["nDCG", "MAP", "MRR"] +
+        [f"EHit@{k}"    for k in show_k] +
+        [f"ERecall@{k}" for k in show_k] +
+        [f"nDCG@{k}"    for k in show_k] +
+        ["nDCG", "MAP", "MRR", "B2FH", "B2FH-Cov"] +
         [f"Cov@{s}"  for s in coverage_sizes] +
         ["Triples"]
     )
@@ -844,12 +834,13 @@ def main() -> None:
         elapsed = time.time() - t0
         logger.info(
             f"  Done in {elapsed:.1f}s | "
-            f"H@10={metrics.get('hits@10', 0):.4f}  "
-            f"R@10={metrics.get('recall@10', 0):.4f}  "
+            f"EHit@10={metrics.get('entity_hit@10', 0):.4f}  "
+            f"ERecall@10={metrics.get('entity_recall@10', 0):.4f}  "
             f"nDCG@10={metrics.get('ndcg@10', 0):.4f}  "
             f"nDCG={metrics.get('ndcg', 0):.4f}  "
             f"MAP={metrics.get('map', 0):.4f}  "
             f"MRR={metrics.get('mrr', 0):.4f}  "
+            f"B2FH={metrics.get('b2fh', float('inf')):.1f}  "
             f"Cov@100={metrics.get('coverage@100', 0):.4f}  "
             f"(triples={int(metrics['n_triples'])})"
         )
