@@ -10,8 +10,8 @@ rmanluo/RoG-cwq) and saves them as JSON files under:
 Usage
 -----
     python -m iswc.download_qa_datasets
-    python -m iswc.download_qa_datasets --output-dir /custom/path
     python -m iswc.download_qa_datasets --dataset webqsp
+    python -m iswc.download_qa_datasets --dataset cwq
 """
 import argparse
 import json
