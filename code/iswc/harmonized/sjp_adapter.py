@@ -148,6 +148,7 @@ class SJPAdapter(CandidateAdapter):
         return Namespace(
             cmd=cmd,
             model="SplitJoinPredictPathE",
+            node_projector="dummy",
             train_paths=str(train_path),
             valid_paths=str(valid_path),
             test_paths=str(test_path),
