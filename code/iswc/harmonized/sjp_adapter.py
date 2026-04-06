@@ -155,6 +155,7 @@ class SJPAdapter(CandidateAdapter):
             path_setup=str(effective_setup),
             max_ppt=50,
             augmentation_factor=20,
+            ent_aggregation="transformer",
             num_workers=max(int(num_workers), 0),
             batch_size=16,
             val_batch_size=16,
