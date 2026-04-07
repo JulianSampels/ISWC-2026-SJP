@@ -546,6 +546,10 @@ def extract_reta_filter_candidates(
     predictions: RankedPredictions = {}
     visited_heads: set[int] = set()
     processed = 0
+    skipped_no_head2relation = 0
+    skipped_no_entity_id = 0
+    skipped_no_types = 0
+    heads_with_candidates = 0
 
     for raw_fact in flat_test_facts:
         if max_facts is not None and processed >= max_facts:
@@ -559,8 +563,10 @@ def extract_reta_filter_candidates(
         visited_heads.add(head_id)
 
         if head_id not in head2relation2tails:
+            skipped_no_head2relation += 1
             continue
         if head_id not in id2entity:
+            skipped_no_entity_id += 1
             continue
 
         head_name = id2entity[head_id]
@@ -596,8 +602,11 @@ def extract_reta_filter_candidates(
                 for index in sorted(idx2relation_tail.keys()):
                     relation_id, tail_id = idx2relation_tail[index]
                     ranked.append((int(relation_id), int(tail_id), None))
+        else:
+            skipped_no_types += 1
 
         if ranked:
+            heads_with_candidates += 1
             predictions[head_id] = _dedupe_ranked_pairs(ranked)
 
     if map_to_sjp_dataset_dir is not None:
@@ -609,6 +618,16 @@ def extract_reta_filter_candidates(
 
     predictions = apply_candidate_budget(predictions, candidate_budget)
     save_ranked_predictions(predictions, output_file)
+    logger.info(
+        "RETA filter diagnostics | processed_facts=%d unique_heads=%d pass_heads=%d "
+        "skip_no_head2rels=%d skip_no_id2entity=%d skip_no_types=%d",
+        processed,
+        len(visited_heads),
+        heads_with_candidates,
+        skipped_no_head2relation,
+        skipped_no_entity_id,
+        skipped_no_types,
+    )
     logger.info("Extracted RETA filter candidates for %d heads", len(predictions))
     return predictions
 
