@@ -29,9 +29,10 @@ class GFRTRAGPipeline(BaseRAGPipeline):
                    NativeRAGPipeline / SJPRAGPipeline for a fair comparison.
     """
 
-    def __init__(self, llm: BaseLLM, model_dir: str) -> None:
+    def __init__(self, llm: BaseLLM, model_dir: str, **kwargs) -> None:
         self.model_dir = model_dir
         self.llm = llm
+        self.epochs = kwargs.pop('epochs', 100)
 
     @property
     def name(self) -> str:
@@ -53,7 +54,7 @@ class GFRTRAGPipeline(BaseRAGPipeline):
         """
         all_triples = []
         seen = set()
-        retriever = build_gfrt_retriever(sample, model_dir=self.model_dir)
+        retriever = build_gfrt_retriever(sample, model_dir=self.model_dir, epochs=self.epochs)
         for entity in sample.topic_entities:
             for triple in retriever.retrieve(entity, budget=budget):
                 key = (triple.head, triple.relation, triple.tail)

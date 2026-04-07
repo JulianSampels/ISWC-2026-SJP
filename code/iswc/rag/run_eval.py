@@ -139,7 +139,7 @@ def build_gfrt_pipeline(args, llm, dataset_obj):
     #     k_t=getattr(args, "gfrt_k_t", 100),
     #     epochs=getattr(args, "gfrt_epochs", 100),
     # )
-    return GFRTRAGPipeline(model_dir=model_dir, llm=llm)
+    return GFRTRAGPipeline(model_dir=model_dir, llm=llm, epochs=args.gfrt_epochs)
 
 
 def build_sjp_pipeline(args, llm):
