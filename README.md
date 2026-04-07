@@ -104,6 +104,15 @@ the **Research Track** on the following grounds:
 8. Conclusion & Future Work
 ```
 
+Harmonized workflow entrypoint:
+
+```bash
+cd code
+python -m iswc.harmonized.interface --help
+```
+
+Detailed command examples for the standardized 7-step workflow are documented in `code/iswc/harmonized/README.md`.
+
 ---
 
 ## Repository Layout
@@ -127,6 +136,9 @@ ISWC-2026-SJP/
    │   │   └── README.md
    │   ├── harmonized/
    │   │   ├── interface.py
+   │   │   ├── base_adapter.py
+   │   │   ├── sjp_adapter.py
+   │   │   ├── reta_adapter.py
    │   │   ├── adapters.py
    │   │   └── README.md
    │   └── evaluation/

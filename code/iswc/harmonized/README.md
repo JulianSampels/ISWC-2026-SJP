@@ -1,11 +1,14 @@
 # Harmonized Interface (SJP + RETA)
 
-This package exposes a cleaned workflow with no legacy command aliases.
+This package exposes a clean standardized workflow with explicit train and inference steps.
 
 1. Generate standardized dataset from KgLoader dataset name.
-2. Prepare adapter-specific dataset files from standardized data.
-3. Generate candidates as standardized CSV.
-4. Rank candidates as standardized CSV.
+2. Prepare adapter-specific dataset files.
+3. Train candidate model.
+4. Generate candidate CSV.
+5. Train ranking model.
+6. Rank candidate CSV.
+7. Evaluate or compare metrics.
 
 Run from the `code/` directory:
 
@@ -13,7 +16,14 @@ Run from the `code/` directory:
 python -m iswc.harmonized.interface --help
 ```
 
-## 1) Generate Standardized Dataset (KgLoader)
+## Module Structure
+
+- `base_adapter.py`: shared `CandidateAdapter` base class plus candidate/ranking serialization helpers.
+- `sjp_adapter.py`: all SJP-specific dataset preparation, training, candidate generation, and ranking logic.
+- `reta_adapter.py`: all RETA-specific dataset preparation, dictionary/runtime helpers, training, candidate generation, and ranking logic.
+- `adapters.py`: compatibility exports for existing imports.
+
+## 1) Generate Standardized Dataset
 
 ```bash
 python -m iswc.harmonized.interface generate-standard-dataset \
@@ -21,7 +31,7 @@ python -m iswc.harmonized.interface generate-standard-dataset \
   --output-dir ./iswc_data/standard/fb15k237
 ```
 
-## 2) Prepare Predictor Dataset (Adapter Translation)
+## 2) Prepare Adapter Dataset
 
 SJP:
 
@@ -44,22 +54,41 @@ python -m iswc.harmonized.interface prepare-dataset \
   --default-entity-type Thing
 ```
 
-The RETA adapter auto-builds `dictionaries_and_facts.bin` during dataset preparation,
-and also auto-checks it before candidate generation and ranking.
+## 3) Train Candidate Model
 
-## 3) Generate Candidates
+SJP trains phase-1 model and returns a tuple checkpoint.
 
-SJP generate candidates executes PathE phase 1 + phase 2.
+```bash
+python -m iswc.harmonized.interface train-candidate-model \
+  --adapter sjp \
+  --path-dataset-dir ./iswc_data/sjp/fb15k237 \
+  --log-dir ./logs/harmonized \
+  --expname sjp_fb15k237
+```
+
+RETA candidate generation is filter-based and has no trainable candidate model.
+
+```bash
+python -m iswc.harmonized.interface train-candidate-model \
+  --adapter reta \
+  --reta-code-dir ./RETA_code \
+  --reta-data-dir ./iswc_data/reta/fb15k237
+```
+
+## 4) Generate Candidates
+
+SJP:
 
 ```bash
 python -m iswc.harmonized.interface generate-candidates \
   --adapter sjp \
   --path-dataset-dir ./iswc_data/sjp/fb15k237 \
+  --candidate-model-path ./logs/harmonized/sjp_fb15k237/checkpoints/<tuple.ckpt> \
   --candidate-budget 500 \
   --output-file ./results/sjp_candidates.csv
 ```
 
-RETA generate candidates executes RETA-Filter.
+RETA:
 
 ```bash
 python -m iswc.harmonized.interface generate-candidates \
@@ -70,43 +99,80 @@ python -m iswc.harmonized.interface generate-candidates \
   --output-file ./results/reta_candidates.csv
 ```
 
-## 4) Rank Candidates
+## 5) Train Ranking Model
 
-SJP rank candidates executes PathE phase 3.
+SJP trains phase-3 model and returns a triple checkpoint.
+
+```bash
+python -m iswc.harmonized.interface train-ranking-model \
+  --adapter sjp \
+  --path-dataset-dir ./iswc_data/sjp/fb15k237 \
+  --candidate-model-path ./logs/harmonized/sjp_fb15k237/checkpoints/<tuple.ckpt> \
+  --log-dir ./logs/harmonized \
+  --expname sjp_fb15k237
+```
+
+RETA trains RETA/RETA++ model via `RETA_code/main_reta_plus.py` without modifying submodule code.
+
+```bash
+python -m iswc.harmonized.interface train-ranking-model \
+  --adapter reta \
+  --reta-code-dir ./RETA_code \
+  --reta-data-dir ./iswc_data/reta/fb15k237 \
+  --model-output-dir ./results/reta_models \
+  --epochs 1000
+```
+
+## 6) Rank Candidates
+
+SJP:
 
 ```bash
 python -m iswc.harmonized.interface rank-candidates \
   --adapter sjp \
   --path-dataset-dir ./iswc_data/sjp/fb15k237 \
   --candidate-file ./results/sjp_candidates.csv \
+  --ranking-model-path ./logs/harmonized/sjp_fb15k237/checkpoints/<triple.ckpt> \
   --candidate-budget 500 \
   --output-file ./results/sjp_ranked.csv
 ```
 
-RETA rank candidates executes RETA-Grader.
+RETA:
 
 ```bash
 python -m iswc.harmonized.interface rank-candidates \
   --adapter reta \
   --reta-code-dir ./RETA_code \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
-  --model-path ./RETA_code/<model_file> \
   --candidate-file ./results/reta_candidates.csv \
+  --ranking-model-path ./results/reta_models/<model_file> \
   --candidate-budget 500 \
   --output-file ./results/reta_ranked.csv
 ```
 
-RETA ranking requires CUDA because RETA forward uses `.cuda(...)` in model code.
+RETA ranking requires CUDA because RETA forward uses `.cuda(...)` in submodule model code.
 
-## Python Adapters
+## 7) Evaluate and Compare
 
-Adapter methods:
+Evaluate one output file:
 
-- `prepare_dataset(...)`
-- `generate_candidates(...)`
-- `rank_candidates(...)`
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage candidates \
+  --input-file ./results/sjp_candidates.csv \
+  --gold-triples ./iswc_data/sjp/fb15k237/test/triples.pt \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/sjp_candidates_metrics.csv
+```
 
-Programmatic standardized metric functions:
+Compare multiple outputs:
 
-- `evaluate_candidates_csv(candidate_csv, gold_triples_file, output_csv, k_values=...)`
-- `evaluate_ranked_candidates_csv(ranked_csv, gold_triples_file, output_csv, k_values=...)`
+```bash
+python -m iswc.harmonized.interface compare \
+  --stage ranking \
+  --gold-triples ./iswc_data/sjp/fb15k237/test/triples.pt \
+  --k-values 1,3,5,10 \
+  --method SJP ./results/sjp_ranked.csv \
+  --method RETA ./results/reta_ranked.csv \
+  --output-json ./results/ranking_compare.json
+```
