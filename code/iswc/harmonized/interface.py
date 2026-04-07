@@ -49,6 +49,15 @@ def _resolve_default_reta_code_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "RETA_code"
 
 
+def _validate_reta_top_nfilters(value: int, command: str) -> None:
+    if value > 0:
+        raise ValueError(
+            f"--top-nfilters must be <= 0 for RETA {command}. "
+            "RETA's filtering path expects non-positive alpha-style thresholds "
+            "(e.g. -10) in this codebase."
+        )
+
+
 def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Path, k_values: Sequence[int]) -> Dict[str, float]:
     from iswc.harmonized.metrics import (
         evaluate_candidate_metrics_from_files,
@@ -144,7 +153,7 @@ def _build_cli() -> argparse.ArgumentParser:
     generate_candidates.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
     generate_candidates.add_argument("--top-nfilters", type=int, default=-10)
     generate_candidates.add_argument("--at-least", type=int, default=2)
-    generate_candidates.add_argument("--sparsifier", type=int, default=2)
+    generate_candidates.add_argument("--sparsifier", type=int, default=1)
     generate_candidates.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
     generate_candidates.add_argument("--device", default="cuda:0")
     generate_candidates.add_argument("--max-facts", type=int, default=None)
@@ -170,17 +179,17 @@ def _build_cli() -> argparse.ArgumentParser:
     train_ranking.add_argument("--reta-code-dir", default=None)
     train_ranking.add_argument("--reta-data-dir", default=None, help="Path to RETA prepared dataset directory.")
     train_ranking.add_argument("--model-output-dir", default=None, help="Directory where RETA model is saved.")
-    train_ranking.add_argument("--epochs", type=int, default=1000)
+    train_ranking.add_argument("--epochs", type=int, default=300)
     train_ranking.add_argument("--batchsize", type=int, default=128)
-    train_ranking.add_argument("--num-filters", type=int, default=100)
+    train_ranking.add_argument("--num-filters", type=int, default=200)
     train_ranking.add_argument("--embsize", type=int, default=100)
-    train_ranking.add_argument("--learningrate", type=float, default=0.0001)
+    train_ranking.add_argument("--learningrate", type=float, default=0.0002)
     train_ranking.add_argument("--with-types", default="True", choices=["True", "False"])
     train_ranking.add_argument("--gpu-ids", default="0")
     train_ranking.add_argument("--at-least", type=int, default=2)
     train_ranking.add_argument("--top-nfilters", type=int, default=-10)
-    train_ranking.add_argument("--build-type-dictionaries", default="False", choices=["True", "False"])
-    train_ranking.add_argument("--sparsifier", type=int, default=2)
+    train_ranking.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
+    train_ranking.add_argument("--sparsifier", type=int, default=1)
     train_ranking.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
     train_ranking.add_argument("--num-negative-samples", type=int, default=1)
     train_ranking.add_argument("--negative-strategy", type=float, default=0.0)
@@ -208,7 +217,7 @@ def _build_cli() -> argparse.ArgumentParser:
     rank_candidates.add_argument("--entities-evaluated", default="both", choices=["both", "one", "none"])
     rank_candidates.add_argument("--top-nfilters", type=int, default=-10)
     rank_candidates.add_argument("--at-least", type=int, default=2)
-    rank_candidates.add_argument("--sparsifier", type=int, default=2)
+    rank_candidates.add_argument("--sparsifier", type=int, default=1)
     rank_candidates.add_argument("--build-type-dictionaries", default="True", choices=["True", "False"])
     rank_candidates.add_argument("--device", default="cuda:0")
     rank_candidates.add_argument("--max-facts", type=int, default=None)
@@ -368,6 +377,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
         if args.reta_data_dir is None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
+        _validate_reta_top_nfilters(int(args.top_nfilters), "generate-candidates")
 
         adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
         predictions = adapter.generate_candidates(
@@ -422,6 +432,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 raise ValueError("--reta-data-dir is required when --adapter reta")
             if args.model_output_dir is None:
                 raise ValueError("--model-output-dir is required when --adapter reta")
+            _validate_reta_top_nfilters(int(args.top_nfilters), "train-ranking-model")
 
             adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
             summary = adapter.train_ranking_model(
@@ -487,6 +498,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
         if args.reta_data_dir is None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
+        _validate_reta_top_nfilters(int(args.top_nfilters), "rank-candidates")
 
         adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
         predictions = adapter.rank_candidates(
