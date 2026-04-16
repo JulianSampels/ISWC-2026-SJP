@@ -142,6 +142,50 @@ def build_gfrt_pipeline(args, llm, dataset_obj):
     return GFRTRAGPipeline(model_dir=model_dir, llm=llm, epochs=args.gfrt_epochs)
 
 
+def build_csv_pipeline(args, llm):
+    """Build the CSV-enhanced RAG pipeline."""
+    from .retrieval.csv_retriever import CSVRetriever
+    from .pipelines.csv_rag import CSVRAGPipeline
+
+    if not args.csv_file:
+        raise ValueError("--csv-file is required when using the csv pipeline.")
+
+    # Load vocabulary maps
+    entity_id_map = _load_id_map(args.entity_map)                    # str → int
+    id_to_entity = _load_id_map(args.entity_map, invert=True)        # int → str
+    id_to_relation = _load_id_map(args.relation_map, invert=True)    # int → str
+
+    retriever = CSVRetriever(
+        csv_path=args.csv_file,
+        entity_id_map=entity_id_map,
+        id_to_entity=id_to_entity,
+        id_to_relation=id_to_relation,
+    )
+    return CSVRAGPipeline(retriever=retriever, llm=llm, name=f"csv_rag")
+
+
+def build_csv_pipeline(args, llm):
+    """Build the CSV-enhanced RAG pipeline."""
+    from .retrieval.csv_retriever import CSVRetriever
+    from .pipelines.csv_rag import CSVRAGPipeline
+
+    if not args.csv_file:
+        raise ValueError("--csv-file is required when using the csv pipeline.")
+
+    # Load vocabulary maps
+    entity_id_map = _load_id_map(args.entity_map)                    # str → int
+    id_to_entity = _load_id_map(args.entity_map, invert=True)        # int → str
+    id_to_relation = _load_id_map(args.relation_map, invert=True)    # int → str
+
+    retriever = CSVRetriever(
+        csv_path=args.csv_file,
+        entity_id_map=entity_id_map,
+        id_to_entity=id_to_entity,
+        id_to_relation=id_to_relation,
+    )
+    return CSVRAGPipeline(retriever=retriever, llm=llm, name=f"csv_rag")
+
+
 def build_sjp_pipeline(args, llm):
     """Build the SJP-enhanced RAG pipeline.
 
@@ -307,8 +351,8 @@ def main(argv=None):
                         help="Limit evaluation to this many samples (for fast tests).")
 
     # --- Pipeline selection ---
-    parser.add_argument("--pipeline", choices=["native", "sjp", "gfrt", "both", "all"], default="both",
-                        help="Which pipeline(s) to run. 'both'=native+sjp, 'all'=native+sjp+gfrt.")
+    parser.add_argument("--pipeline", choices=["native", "sjp", "gfrt", "csv", "both", "all"], default="both",
+                        help="Which pipeline(s) to run. 'both'=native+sjp, 'all'=native+sjp+gfrt+csv.")
 
     # --- LLM ---
     parser.add_argument("--model", default="ollama-qwen3-8b",
@@ -348,6 +392,8 @@ def main(argv=None):
                         help="Path to trained SJP model checkpoint (.ckpt).")
     parser.add_argument("--sjp-dataset-path", default=None,
                         help="Path to serialised UniqueHeadEntityMultiPathDataset (.pt).")
+    parser.add_argument("--csv-file", default=None,
+                        help="Path to harmonized standardized candidates.csv for the CSV retriever pipeline.")
     parser.add_argument("--entity-map", default=None,
                         help="JSON file mapping entity string ID → SJP integer ID.")
     parser.add_argument("--relation-map", default=None,
@@ -377,7 +423,7 @@ def main(argv=None):
     if args.pipeline == "both":
         pipelines_to_run = ["native", "sjp"]
     elif args.pipeline == "all":
-        pipelines_to_run = ["native", "sjp", "gfrt"]
+        pipelines_to_run = ["native", "sjp", "gfrt", "csv"]
     else:
         pipelines_to_run = [args.pipeline]
 
@@ -402,6 +448,8 @@ def main(argv=None):
             elif pipe_name == "gfrt":
                 # pipeline = build_gfrt_pipeline(args, llm, dataset_name=ds_name)
                 pipeline = build_gfrt_pipeline(args, llm, dataset_obj=dataset_obj)
+            elif pipe_name == "csv":
+                pipeline = build_csv_pipeline(args, llm)
             else:
                 pipeline = build_sjp_pipeline(args, llm)
             raw = run_pipeline_on_dataset(pipeline, dataset_obj, args)
