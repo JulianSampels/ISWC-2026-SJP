@@ -11,16 +11,9 @@ For each head entity h in the test set:
     - Ground truth: all (r, t) pairs in test_triples with that head
     - Pipeline generates top-N ranked (h, r, t) candidates
 
-Metrics reported (all macro-averaged — each entity weighted equally):
-    EntityHit@K    — fraction of entities with ≥1 gold fact in top-K
-    EntityRecall@K — fraction of gold facts recovered in top-K per entity
-    NDCG@K         — normalised discounted cumulative gain at K
-    NDCG           — normalised discounted cumulative gain over full ranked list
-    MAP            — mean average precision
-    MRR            — mean reciprocal rank over per-entity gold facts
-    B2FH           — mean budget-to-first-hit (over entities with ≥1 hit)
-    B2FH-Coverage  — fraction of entities where any gold fact is found
-    Coverage@S     — EntityHit@S for large S (candidate retrieval quality)
+Metrics reported (from iswc.harmonized.metrics):
+    Candidate: total/average/relative size, coverage, density, B2FH
+    Ranking: MRR, Recall@K, MAP@K, nDCG@K
 
 Usage
 -----
@@ -55,11 +48,12 @@ import time
 from collections import defaultdict
 from itertools import product
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from tqdm import tqdm
 from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pandas as pd
 
 import torch
 
@@ -81,16 +75,7 @@ from iswc.baselines import (
     PyKEENTrainer,
     InstanceCompletionPipeline,
 )
-# from iswc.evaluation.entity_metrics import (
-#     entity_hit_at_k      as _entity_hit_at_k,
-#     entity_recall_at_k   as _entity_recall_at_k,
-#     ndcg_at_k            as _ndcg_at_k,
-#     ndcg                 as _ndcg,
-#     mean_reciprocal_rank as _mean_reciprocal_rank,
-#     average_precision    as _average_precision,
-#     budget_to_first_hit  as _budget_to_first_hit,
-# )
-from iswc.evaluation.evaluate import evaluate_model, format_results_table
+from iswc.harmonized.metrics import evaluate_model, format_metrics_log, format_results_table
 
 
 logging.basicConfig(
@@ -178,363 +163,6 @@ def load_candidates(path: Path) -> Dict[int, List[(int, int, int, float)]]:
 # ---------------------------------------------------------------------------
 # _EVAL_CKPT_NAME = "eval_checkpoint.json"
 
-
-# def _save_eval_checkpoint(path: Path, state: Dict) -> None:
-#     """Atomically write evaluation state to disk (write-then-rename)."""
-#     tmp = path.with_suffix(".tmp")
-#     tmp.write_text(json.dumps(state, indent=2))
-#     tmp.replace(path)               # atomic on POSIX; safe on Windows Python ≥3.3
-
-
-# def _load_eval_checkpoint(path: Path) -> Optional[Dict]:
-#     """Return the checkpoint dict, or None if the file does not exist."""
-#     if not path.exists():
-#         return None
-#     try:
-#         return json.loads(path.read_text())
-#     except Exception:
-#         logger.warning(f"  Could not read checkpoint {path} — starting fresh.")
-#         return None
-
-
-# def _accumulators_to_state(
-#     batch_start: int,
-#     entity_hit_sum: Dict, entity_recall_sum: Dict, ndcg_sum: Dict,
-#     coverage: Dict, mrr_sum: float, map_sum: float,
-#     ndcg_full_sum: float, b2fh_sum: float, b2fh_count: int,
-#     n_triples: int, n_heads_evaluated: int,
-#     k_values: Tuple, coverage_sizes: Tuple,
-# ) -> Dict:
-#     """Serialise accumulator dicts (int keys → str for JSON)."""
-#     return {
-#         "batch_start":        batch_start,
-#         "entity_hit_sum":     {str(k): v for k, v in entity_hit_sum.items()},
-#         "entity_recall_sum":  {str(k): v for k, v in entity_recall_sum.items()},
-#         "ndcg_sum":           {str(k): v for k, v in ndcg_sum.items()},
-#         "coverage":           {str(s): v for s, v in coverage.items()},
-#         "mrr_sum":            mrr_sum,
-#         "map_sum":            map_sum,
-#         "ndcg_full_sum":      ndcg_full_sum,
-#         "b2fh_sum":           b2fh_sum,
-#         "b2fh_count":         b2fh_count,
-#         "n_triples":          n_triples,
-#         "n_heads_evaluated":  n_heads_evaluated,
-#         "k_values":           list(k_values),
-#         "coverage_sizes":     list(coverage_sizes),
-#     }
-
-
-# def _state_to_accumulators(state: Dict, k_values: Tuple, coverage_sizes: Tuple) -> Dict:
-#     """Restore accumulator dicts from a checkpoint (str keys → int)."""
-#     return {
-#         "batch_start":        state["batch_start"],
-#         "entity_hit_sum":     {int(k): v for k, v in state["entity_hit_sum"].items()},
-#         "entity_recall_sum":  {int(k): v for k, v in state["entity_recall_sum"].items()},
-#         "ndcg_sum":           {int(k): v for k, v in state["ndcg_sum"].items()},
-#         "coverage":           {int(s): v for s, v in state["coverage"].items()},
-#         "mrr_sum":            state["mrr_sum"],
-#         "map_sum":            state["map_sum"],
-#         "ndcg_full_sum":      state["ndcg_full_sum"],
-#         "b2fh_sum":           state["b2fh_sum"],
-#         "b2fh_count":         state["b2fh_count"],
-#         "n_triples":          state["n_triples"],
-#         "n_heads_evaluated":  state["n_heads_evaluated"],
-#     }
-
-
-# # ---------------------------------------------------------------------------
-# # Per-head metric worker
-# # ---------------------------------------------------------------------------
-# # Globals are written in the main process before forking so all workers see
-# # the current batch's data via copy-on-write — only head IDs (ints) travel
-# # through the IPC pipe, avoiding expensive candidate-list serialization.
-
-# _eval_candidates:     Dict[int, List[Tuple[int, int, int, float]]] = {}
-# _eval_ground_truth:   Dict[int, Set[Tuple[int, int]]]              = {}
-# _eval_k_values:       Tuple[int, ...]                              = ()
-# _eval_coverage_sizes: Tuple[int, ...]                              = ()
-
-
-# def _eval_one_head(args: Tuple) -> Dict:
-#     """
-#     Compute all ranking metrics for a single head entity.
-
-#     Accepts (h, candidates, gold) as a tuple so the pool can be kept alive
-#     across batches — only k_values/coverage_sizes are read from globals
-#     (set once before the pool is created and never changed).
-#     Returns a partial-sums dict that the main process aggregates.
-#     """
-#     h, candidates, gold = args
-#     k_values       = _eval_k_values
-#     coverage_sizes = _eval_coverage_sizes
-
-#     n_gold  = len(gold)
-#     # Convert 4-tuple candidates to ranked (r, t) list (deduplicated, order preserved)
-#     seen: set = set()
-#     ranked: List[Tuple[int, int]] = []
-#     for _, r, t, _ in candidates:
-#         if (r, t) not in seen:
-#             seen.add((r, t))
-#             ranked.append((r, t))
-
-#     # Entity-level metrics (macro) — from entity_metrics
-#     entity_hit    = {k: _entity_hit_at_k(ranked, gold, k)    for k in k_values}
-#     entity_recall = {k: _entity_recall_at_k(ranked, gold, k) for k in k_values}
-#     mrr           = _mean_reciprocal_rank(ranked, gold)
-#     b2fh          = _budget_to_first_hit(ranked, gold)   # int or None
-
-#     # NDCG@K and NDCG (full list) — from entity_metrics
-#     ndcg_k    = {k: _ndcg_at_k(ranked, gold, k) for k in k_values}
-#     ndcg_full = _ndcg(ranked, gold)
-
-#     # MAP — from entity_metrics
-#     map_val = _average_precision(ranked, gold)
-
-#     # Coverage@S — entity_hit at coverage_sizes (same definition, separate size list)
-#     coverage = {s: _entity_hit_at_k(ranked, gold, s) for s in coverage_sizes}
-
-#     return {
-#         "entity_hit":    entity_hit,
-#         "entity_recall": entity_recall,
-#         "ndcg":          ndcg_k,
-#         "ndcg_full":     ndcg_full,
-#         "map":           map_val,
-#         "mrr":           mrr,
-#         "b2fh":          b2fh,
-#         "coverage":      coverage,
-#         "n_triples":     n_gold,
-#     }
-
-
-# ---------------------------------------------------------------------------
-# Evaluation helpers
-# ---------------------------------------------------------------------------
-def prepare_candidates(
-    pipeline: InstanceCompletionPipeline,
-    test_heads: List[int],
-    ground_truth: Dict[int, Set[Tuple[int, int]]],
-    cache_dir: Path,
-    max_candidates: Optional[int] = None,
-    head_batch_size: int = 256,
-    chunk_size: int = 512,
-    num_workers: int = 0,
-) -> None:
-    """
-    Pre-generate and cache candidates for all test heads.
-
-    Heads whose cache file already exists are skipped.  The remaining heads
-    are processed in sub-batches of `head_batch_size` using
-    pipeline.generate_candidates_batch(), which scores all (h, r) pairs in
-    that sub-batch in a single chunked GPU pass (controlled by `chunk_size`).
-    Within each sub-batch, Stage-1 relation prediction is optionally
-    parallelised across `num_workers` CPU processes.
-
-    Each head's candidate list is stored as an individual pickle file:
-        cache_dir / head_{h}.pkl  →  List[(head, rel, tail, score)]
-    """
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    metadata_file = cache_dir / '00metadata.json'
-    heads_todo = [h for h in test_heads if ground_truth.get(h)]
-
-    if metadata_file.exists():
-        metadata = json.loads(metadata_file.read_text())
-        heads_todo = [h for h in heads_todo if h not in metadata.keys()]
-    else:
-        metadata = {}
-
-    if not heads_todo:
-        logger.info("  All candidates already cached — skipping generation.")
-        return
-
-    logger.info(
-        f"  Generating candidates for {len(heads_todo)} heads "
-        f"(head_batch_size={head_batch_size}, chunk_size={chunk_size}, max_candidates={max_candidates})…"
-    )
-
-    save_executor = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-    save_futures: list[concurrent.futures.Future] = []
-
-    try:
-        for batch_start in tqdm(range(0, len(heads_todo), head_batch_size),
-                                desc="candidate batches", unit="batch"):
-            batch = heads_todo[batch_start : batch_start + head_batch_size]
-
-            t0 = time.time()
-            batch_results = pipeline.generate_candidates_batch(
-                batch,
-                max_candidates=max_candidates,
-                chunk_size=chunk_size,
-                num_workers=num_workers,
-            )
-            logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
-
-            cache_file = cache_dir / f'{_hash_heads(batch)}.parquet'
-            for h in batch:
-                metadata[h] = str(cache_file)
-            metadata_file.write_text(json.dumps(metadata, indent=2))
-
-            # Dispatch save to background process — overlaps with all future generation
-            future = save_executor.submit(save_candidates, batch_results, cache_file)
-            save_futures.append(future)
-            logger.info(f"  Save dispatched asynchronously → {cache_file.name}")
-
-        # Wait for all saves to complete
-        t0 = time.time()
-        for future in concurrent.futures.as_completed(save_futures):
-            future.result()  # re-raises any exception from the worker
-        logger.info(f"  All saves complete in {time.time()-t0:.1f}s")
-    finally:
-        save_executor.shutdown(wait=False)
-
-    logger.info(f"  Candidate generation complete ({len(heads_todo)} heads).")
-
-
-# def evaluate_pipeline(
-#     pipeline: InstanceCompletionPipeline,
-#     test_heads: List[int],
-#     ground_truth: Dict[int, Set[Tuple[int, int]]],
-#     k_values: Tuple[int, ...] = (1, 5, 10, 50),
-#     coverage_sizes: Tuple[int, ...] = (10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000),
-#     cache_dir: Optional[Path] = None,
-#     max_candidates: Optional[int] = None,
-#     head_batch_size: int = 256,
-#     chunk_size: int = 512,
-#     num_workers: int = 0,
-#     eval_workers: int = 32,
-# ) -> Dict[str, float]:
-#     """
-#     Comprehensive ranking evaluation of the instance completion pipeline.
-
-#     Candidates are generated via prepare_candidates() (GPU-batched, cached to
-#     disk), then loaded per-head for metric computation.  Heads whose cache
-#     file is missing after generation are skipped gracefully.
-
-#     All metrics are macro-averaged (each entity weighted equally), using
-#     entity_metrics.py as the authoritative implementation.
-
-#     EntityHit@K    — fraction of entities with ≥1 gold in top-K       (macro)
-#     EntityRecall@K — fraction of gold facts recovered in top-K         (macro)
-#     NDCG@K         — normalised DCG at K                               (macro)
-#     NDCG           — normalised DCG over full ranked list               (macro)
-#     MAP            — mean average precision                             (macro)
-#     MRR            — mean reciprocal rank over gold facts per entity    (macro)
-#     B2FH           — mean budget-to-first-hit (entities with ≥1 hit)  (macro)
-#     B2FH-Coverage  — fraction of entities where ≥1 gold is found
-#     Coverage@S     — same as EntityHit@S for large S values
-
-#     Returns
-#     -------
-#     Dict with keys entity_hit@K, entity_recall@K, ndcg@K, ndcg, map, mrr,
-#     b2fh, b2fh_coverage, coverage@S, n_triples, n_heads.
-#     """
-#     # prepare_candidates(
-#     #     pipeline, test_heads, ground_truth, cache_dir,
-#     #     max_candidates=max_candidates,
-#     #     head_batch_size=head_batch_size,
-#     #     chunk_size=chunk_size,
-#     #     num_workers=num_workers,
-#     # )
-
-#     # ── Checkpoint: resume if interrupted ────────────────────────────────────
-#     ckpt_path = cache_dir / _EVAL_CKPT_NAME
-#     cache_dir.mkdir(exist_ok=True, parents=True)
-#     ckpt      = _load_eval_checkpoint(ckpt_path)
-
-#     if ckpt and ckpt.get("k_values") == list(k_values) \
-#              and ckpt.get("coverage_sizes") == list(coverage_sizes):
-#         restored          = _state_to_accumulators(ckpt, k_values, coverage_sizes)
-#         resume_from       = restored["batch_start"]
-#         entity_hit_sum    = restored["entity_hit_sum"]
-#         entity_recall_sum = restored["entity_recall_sum"]
-#         ndcg_sum          = restored["ndcg_sum"]
-#         coverage          = restored["coverage"]
-#         mrr_sum           = restored["mrr_sum"]
-#         map_sum           = restored["map_sum"]
-#         ndcg_full_sum     = restored["ndcg_full_sum"]
-#         b2fh_sum          = restored["b2fh_sum"]
-#         b2fh_count        = restored["b2fh_count"]
-#         n_triples         = restored["n_triples"]
-#         n_heads_evaluated = restored["n_heads_evaluated"]
-#         logger.info(
-#             f"  Resuming evaluation from batch {resume_from} "
-#             f"({n_heads_evaluated} heads already done)."
-#         )
-#     else:
-#         if ckpt:
-#             logger.warning(
-#                 "  Checkpoint found but k_values/coverage_sizes differ — starting fresh."
-#             )
-#         resume_from       = 0
-#         entity_hit_sum    = {k: 0.0 for k in k_values}
-#         entity_recall_sum = {k: 0.0 for k in k_values}
-#         ndcg_sum          = {k: 0.0 for k in k_values}
-#         coverage          = {s: 0.0 for s in coverage_sizes}
-#         mrr_sum           = 0.0
-#         map_sum           = 0.0
-#         ndcg_full_sum     = 0.0
-#         b2fh_sum          = 0.0
-#         b2fh_count        = 0
-#         n_triples         = 0
-#         n_heads_evaluated = 0
-
-#     heads_todo = [h for h in test_heads if ground_truth.get(h)]
-#     batches    = list(range(0, len(heads_todo), head_batch_size))
-
-#     # Set constant globals before forking so workers inherit them at pool
-#     # creation time — these never change between batches.
-#     global _eval_k_values, _eval_coverage_sizes
-#     _eval_k_values       = k_values
-#     _eval_coverage_sizes = coverage_sizes
-
-#     n_proc = min(eval_workers, len(heads_todo)) if eval_workers > 0 else 0
-#     pool   = mp.get_context("fork").Pool(processes=n_proc) if n_proc > 1 else None
-
-#     # ── Per-head evaluation ───────────────────────────────────────────────────
-#     try:
-#         for batch_start in tqdm(batches, desc="eval batches", unit="batch",
-#                                 initial=batches.index(resume_from) if resume_from in batches else 0):
-#             if batch_start < resume_from:
-#                 continue                # already processed in a previous run
-
-#             batch = heads_todo[batch_start : batch_start + head_batch_size]
-#             t0 = time.time()
-#             batch_results = pipeline.generate_candidates_batch(
-#                 batch,
-#                 max_candidates=max_candidates,
-#                 chunk_size=chunk_size,
-#                 num_workers=num_workers,
-#             )
-#             logger.info(f"  Candidate generation ready in {time.time()-t0:.1f}s")
-
-#             # ── Parallel per-head metric computation ──────────────────────────
-#             # Per-batch candidates and ground truth are passed as arguments so
-#             # the persistent pool (forked once before the loop) can process any
-#             # batch without relying on globals that changed since fork time.
-#             t0 = time.time()
-#             heads_in_batch = [h for h in batch_results if ground_truth.get(h)]
-#             task_args      = [(h, batch_results[h], ground_truth[h]) for h in heads_in_batch]
-
-#             if pool is not None:
-#                 partial_results = pool.map(_eval_one_head, task_args)
-#             else:
-#                 partial_results = [_eval_one_head(a) for a in task_args]
-
-#             # ── Aggregate partial results ──────────────────────────────────────
-#             for pr in partial_results:
-#                 for k in k_values:
-#                     entity_hit_sum[k]    += pr["entity_hit"][k]
-#                     entity_recall_sum[k] += pr["entity_recall"][k]
-#                     ndcg_sum[k]          += pr["ndcg"][k]
-#                 map_sum       += pr["map"]
-#                 mrr_sum       += pr["mrr"]
-#                 ndcg_full_sum += pr["ndcg_full"]
-#                 if pr["b2fh"] is not None:
-#                     b2fh_sum   += pr["b2fh"]
-#                     b2fh_count += 1
-#                 for s in coverage_sizes:
-#                     coverage[s] += pr["coverage"][s]
-#                 n_triples         += pr["n_triples"]
 #                 n_heads_evaluated += 1
 
 #             logger.info(f"  Metrics ready in {time.time()-t0:.1f}s")
@@ -634,7 +262,7 @@ def evaluate_pipeline(
     max_candidates: Optional[int] = None,
     batch_size: int = 256,
     num_workers: int = 32,
-) -> Dict[str, float]:
+) -> pd.DataFrame:
     return evaluate_model(model=pipeline,
                           ground_truth=ground_truth,
                           num_workers=num_workers,
@@ -786,7 +414,7 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Experiment loop ───────────────────────────────────────────────────────
-    all_results: Dict[str, Dict[str, float]] = {}
+    all_results: Dict[str, pd.DataFrame] = {}
 
     for rel_name, kgc_name in product(args.rel_predictors, args.kgc_models):
         config_name = f"{rel_name}+{kgc_name}"
@@ -846,18 +474,7 @@ def main() -> None:
             num_workers=args.num_workers,
         )
         elapsed = time.time() - t0
-        logger.info(
-            f"  Done in {elapsed:.1f}s | "
-            f"EHit@10={metrics.get('entity_hit@10', 0):.4f}  "
-            f"ERecall@10={metrics.get('entity_recall@10', 0):.4f}  "
-            f"nDCG@10={metrics.get('ndcg@10', 0):.4f}  "
-            f"nDCG={metrics.get('ndcg', 0):.4f}  "
-            f"MAP={metrics.get('map', 0):.4f}  "
-            f"MRR={metrics.get('mrr', 0):.4f}  "
-            f"B2FH={metrics.get('b2fh', float('inf')):.1f}  "
-            f"Cov@100={metrics.get('coverage@100', 0):.4f}  "
-            f"(triples={int(metrics['n_triples'])})"
-        )
+        logger.info("  Done in %.1fs | %s", elapsed, format_metrics_log(metrics))
 
         all_results[config_name] = metrics
 
@@ -874,7 +491,7 @@ def main() -> None:
                 "embed_dim":     args.embed_dim,
                 "epochs":        args.epochs,
                 "test_heads":    len(test_heads),
-                "metrics":       metrics,
+                "metrics":       metrics.to_dict(orient="records"),
             }
             out_path = output_dir / f"{args.dataset}_{config_name}_r{args.k_r}_t{args.k_t}.json"
             out_path.write_text(json.dumps(run_meta, indent=2))
@@ -885,7 +502,8 @@ def main() -> None:
 
     if output_dir:
         summary_path = output_dir / f"{args.dataset}_r{args.k_r}_t{args.k_t}_summary.json"
-        summary_path.write_text(json.dumps(all_results, indent=2))
+        summary_payload = {name: df.to_dict(orient="records") for name, df in all_results.items()}
+        summary_path.write_text(json.dumps(summary_payload, indent=2))
         logger.info(f"Summary saved → {summary_path}")
 
 

@@ -112,21 +112,22 @@ rf.set_learned_relation_scores(phase1_rel_scores)   # Dict[entity_id -> Dict[rel
 ic.set_learned_scores(phase1_rel_scores, phase1_tail_scores)
 ```
 
-### Evaluation (entity-level metrics)
+### Evaluation
 
 ```python
-from iswc.evaluation import evaluate_entity_centric, evaluate_at_fixed_budgets, format_results_table
+from iswc.harmonized.metrics import evaluate_ranked_metrics, to_gold_pairs_by_head, format_results_table
 
-# Convert candidate list format: {head -> [(h, r, t, score), ...]} -> {head -> [(r, t), ...]}
-predictions = {h: [(r, t) for (_, r, t, _) in cands] for h, cands in candidates.items()}
+# Convert candidate list format: {head -> [(h, r, t, score), ...]} -> {head -> [(r, t, score), ...]}
+predictions = {h: [(r, t, s) for (_, r, t, s) in cands] for h, cands in candidates.items()}
+gold_pairs_by_head = to_gold_pairs_by_head(test_triples.tolist())
 
-# Full evaluation
-results = evaluate_entity_centric(predictions, test_triples, k_values=[1, 5, 10, 20, 50, 100])
+# Unified evaluation (candidate + ranking metrics)
+results = evaluate_ranked_metrics(predictions, gold_pairs_by_head, k_values=[1, 5, 10, 20, 50, 100])
 
-# Fixed-budget comparison
-budget_results = evaluate_at_fixed_budgets(predictions, test_triples, budgets=[50, 100, 200, 500])
+# Access single metric values directly by name
+metric_map = dict(zip(results["metric"], results["value"]))
+print(metric_map["mrr_micro"], metric_map["recall@10"], metric_map["coverage_micro"])
 
 # Pretty table
-from iswc.evaluation import format_results_table
 print(format_results_table({"RelFirst": results, "SJP": sjp_results}))
 ```
