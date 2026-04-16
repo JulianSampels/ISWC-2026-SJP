@@ -58,7 +58,7 @@ def _validate_reta_top_nfilters(value: int, command: str) -> None:
         )
 
 
-def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Path, k_values: Sequence[int]) -> Dict[str, float]:
+def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Path, k_values: Sequence[int]):
     from iswc.harmonized.metrics import (
         evaluate_candidate_metrics_from_files,
         evaluate_ranked_metrics_from_files,
@@ -533,12 +533,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--input-file must end with .csv")
 
         k_values = parse_k_values(args.k_values)
-        metrics = _evaluate_metrics(
+        metrics_df = _evaluate_metrics(
             stage=args.stage,
             input_file=args.input_file,
             gold_triples=args.gold_triples,
             k_values=k_values,
         )
+
+        metrics = metrics_df.to_dict(orient="records")
 
         payload = {
             "workflow_step": "evaluate",
@@ -552,7 +554,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.output_csv is not None:
             from iswc.harmonized.metrics import save_metrics_csv
 
-            save_metrics_csv(metrics, args.output_csv)
+            save_metrics_csv(metrics_df, args.output_csv)
             payload["output_csv"] = str(Path(args.output_csv).resolve())
 
         print(json.dumps(payload, indent=2))
@@ -560,15 +562,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.command == "compare":
         k_values = parse_k_values(args.k_values)
-        compared: Dict[str, Dict[str, float]] = {}
+        compared: Dict[str, List[Dict[Any, Any]]] = {}
 
         for name, input_file in args.method:
-            compared[name] = _evaluate_metrics(
+            metrics_df = _evaluate_metrics(
                 stage=args.stage,
                 input_file=input_file,
                 gold_triples=args.gold_triples,
                 k_values=k_values,
             )
+            compared[name] = metrics_df.to_dict(orient="records")
 
         payload: Dict[str, Any] = {
             "workflow_step": "compare",
