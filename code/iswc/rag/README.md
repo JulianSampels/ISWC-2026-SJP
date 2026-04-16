@@ -5,9 +5,9 @@ This directory contains the codebase for evaluating various retrieval-augmented 
 ## Available Pipelines
 
 - `native`: Uses embedding-based cosine similarity retrieval (e.g. SentenceTransformers).
-- `gfrt`: Uses GFRT-enhanced retrieval.
-- `sjp`: Uses our proposed SJP (Split-Join-Predict) instance completion retrieval directly from a model checkpoint.
-- `csv`: Consumes pre-computed harmonized `candidates.csv` files (e.g., from RETA or SJP).
+- `gfrt`: Uses GFRT-enhanced retrieval. WIP! Not ready yet
+- `sjp`: Uses our proposed SJP (Split-Join-Predict) instance completion retrieval directly from a model checkpoint. WIP! Not ready yet
+- `csv`: Consumes pre-computed harmonized `candidates.csv` files (e.g., from RETA or SJP). WIP! Not ready yet
 
 ## Using the CSV Pipeline
 
