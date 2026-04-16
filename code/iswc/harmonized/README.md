@@ -1,4 +1,4 @@
-# Harmonized Interface (SJP + RETA)
+# Harmonized Interface (SJP + RETA + GFRT)
 
 This package exposes a clean standardized workflow with explicit train and inference steps.
 
@@ -21,6 +21,7 @@ python -m iswc.harmonized.interface --help
 - `base_adapter.py`: shared `CandidateAdapter` base class plus candidate/ranking serialization helpers.
 - `sjp_adapter.py`: all SJP-specific dataset preparation, training, candidate generation, and ranking logic.
 - `reta_adapter.py`: all RETA-specific dataset preparation, dictionary/runtime helpers, training, candidate generation, and ranking logic.
+- `gfrt_adapter.py`: GFRT-specific numeric dataset preparation, GFRT model training, candidate generation, and candidate re-ranking.
 - `adapters.py`: compatibility exports for existing imports.
 
 ## 1) Generate Standardized Dataset
@@ -52,6 +53,15 @@ python -m iswc.harmonized.interface prepare-dataset \
   --standard-dataset-dir ./iswc_data/standard/fb15k237 \
   --output-dir ./iswc_data/reta/fb15k237 \
   --default-entity-type Thing
+
+GFRT:
+
+```bash
+python -m iswc.harmonized.interface prepare-dataset \
+  --adapter gfrt \
+  --standard-dataset-dir ./iswc_data/standard/fb15k237 \
+  --output-dir ./iswc_data/gfrt/fb15k237
+```
 ```
 
 ## 3) Train Candidate Model
@@ -73,6 +83,21 @@ python -m iswc.harmonized.interface train-candidate-model \
   --adapter reta \
   --reta-code-dir ./RETA_code \
   --reta-data-dir ./iswc_data/reta/fb15k237
+```
+
+GFRT trains one model that is used for both candidate generation and ranking:
+
+```bash
+python -m iswc.harmonized.interface train-candidate-model \
+  --adapter gfrt \
+  --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
+  --log-dir ./logs/harmonized \
+  --expname gfrt_fb15k237 \
+  --max-epochs 100 \
+  --embed-dim 100 \
+  --num-layers 2 \
+  --top-k1 100 \
+  --top-k2 30
 ```
 
 ## 4) Generate Candidates
@@ -99,6 +124,19 @@ python -m iswc.harmonized.interface generate-candidates \
   --output-file ./results/reta_candidates.csv
 ```
 
+GFRT:
+
+```bash
+python -m iswc.harmonized.interface generate-candidates \
+  --adapter gfrt \
+  --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
+  --candidate-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt \
+  --candidate-budget 500 \
+  --top-m-relations 20 \
+  --top-n-tails 100 \
+  --output-file ./results/gfrt_candidates.csv
+```
+
 ## 5) Train Ranking Model
 
 SJP trains phase-3 model and returns a triple checkpoint.
@@ -121,6 +159,15 @@ python -m iswc.harmonized.interface train-ranking-model \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
   --model-output-dir ./results/reta_models \
   --epochs 1000
+```
+
+GFRT uses the same model for ranking; this step validates or reuses the existing checkpoint:
+
+```bash
+python -m iswc.harmonized.interface train-ranking-model \
+  --adapter gfrt \
+  --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
+  --candidate-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt
 ```
 
 ## 6) Rank Candidates
@@ -149,6 +196,21 @@ python -m iswc.harmonized.interface rank-candidates \
   --candidate-budget 500 \
   --output-file ./results/reta_ranked.csv
 ```
+
+GFRT:
+
+```bash
+python -m iswc.harmonized.interface rank-candidates \
+  --adapter gfrt \
+  --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
+  --candidate-file ./results/gfrt_candidates.csv \
+  --ranking-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt \
+  --candidate-budget 500 \
+  --output-file ./results/gfrt_ranked.csv
+```
+
+When using GFRT prepared datasets, a numeric gold file is generated at
+`./iswc_data/gfrt/<dataset>/gold_test.csv` for step 7 evaluation.
 
 RETA ranking requires CUDA because RETA forward uses `.cuda(...)` in submodule model code.
 

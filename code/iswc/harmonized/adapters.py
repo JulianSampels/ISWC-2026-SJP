@@ -4,6 +4,7 @@ New code should import from:
 - iswc.harmonized.base_adapter
 - iswc.harmonized.sjp_adapter
 - iswc.harmonized.reta_adapter
+- iswc.harmonized.gfrt_adapter
 """
 
 from .base_adapter import (
@@ -13,6 +14,7 @@ from .base_adapter import (
     load_ranked_predictions,
     save_ranked_predictions,
 )
+from .gfrt_adapter import GFRTAdapter
 from .reta_adapter import (
     RETAAdapter,
     build_reta_dictionaries,
@@ -28,6 +30,7 @@ __all__ = [
     "RankedPredictions",
     "SJPAdapter",
     "RETAAdapter",
+    "GFRTAdapter",
     "apply_candidate_budget",
     "load_ranked_predictions",
     "save_ranked_predictions",

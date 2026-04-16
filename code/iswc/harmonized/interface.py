@@ -1,9 +1,9 @@
 """
-Harmonized interface for SJP and RETA dataset/model/candidate/ranking workflows.
+Harmonized interface for SJP, RETA, and GFRT dataset/model/candidate/ranking workflows.
 
 This module intentionally stays thin and only orchestrates standardized adapter calls:
 1) Generate standardized datasets from KgLoader dataset names.
-2) Convert standardized datasets into SJP- and RETA-specific input layouts.
+2) Convert standardized datasets into SJP-, RETA-, and GFRT-specific input layouts.
 3) Train candidate-generation models.
 4) Generate candidate sets.
 5) Train ranking models.
@@ -80,7 +80,7 @@ def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Pa
 def _build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Harmonized SJP/RETA interface for standardized dataset generation, "
+            "Harmonized SJP/RETA/GFRT interface for standardized dataset generation, "
             "adapter translation, model training, candidate generation, ranking, and evaluation."
         )
     )
@@ -99,7 +99,7 @@ def _build_cli() -> argparse.ArgumentParser:
         "prepare-dataset",
         help="Step 2: Prepare adapter-specific dataset files from a standardized dataset.",
     )
-    prepare_dataset.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    prepare_dataset.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
     prepare_dataset.add_argument("--standard-dataset-dir", required=True)
     prepare_dataset.add_argument("--output-dir", required=True)
     prepare_dataset.add_argument("--triple-order", choices=["hrt", "htr"], default="hrt")
@@ -118,8 +118,12 @@ def _build_cli() -> argparse.ArgumentParser:
         "train-candidate-model",
         help="Step 3: Train model(s) used for candidate generation.",
     )
-    train_candidate.add_argument("--adapter", choices=["sjp", "reta"], required=True)
-    train_candidate.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
+    train_candidate.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
+    train_candidate.add_argument(
+        "--path-dataset-dir",
+        default=None,
+        help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).",
+    )
     train_candidate.add_argument("--path-setup", default="20_10")
     train_candidate.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
     train_candidate.add_argument("--log-dir", default="./logs/harmonized")
@@ -132,12 +136,23 @@ def _build_cli() -> argparse.ArgumentParser:
     train_candidate.add_argument("--sjp-code-dir", default=None)
     train_candidate.add_argument("--reta-code-dir", default=None)
     train_candidate.add_argument("--reta-data-dir", default=None, help="Path to RETA prepared dataset directory.")
+    train_candidate.add_argument("--embed-dim", type=int, default=100, help="GFRT embedding dimensionality.")
+    train_candidate.add_argument("--num-layers", type=int, default=2, help="GFRT number of GNN layers.")
+    train_candidate.add_argument("--top-k1", type=int, default=100, help="GFRT top-k entity neighbors per entity.")
+    train_candidate.add_argument("--top-k2", type=int, default=30, help="GFRT top-k relation neighbors per relation.")
+    train_candidate.add_argument("--batch-size", type=int, default=256, help="GFRT training batch size.")
+    train_candidate.add_argument("--lr-intra", type=float, default=0.01, help="GFRT intra-view learning rate.")
+    train_candidate.add_argument("--lr-inter", type=float, default=0.001, help="GFRT inter-view learning rate.")
+    train_candidate.add_argument("--margin", type=float, default=1.0, help="GFRT hinge margin.")
+    train_candidate.add_argument("--log-every", type=int, default=10, help="GFRT loss log interval in epochs.")
+    train_candidate.add_argument("--model-path", default=None, help="Optional GFRT model checkpoint output path.")
+    train_candidate.add_argument("--load-model-path", default=None, help="Optional existing GFRT model to load.")
 
     generate_candidates = sub.add_parser(
         "generate-candidates",
         help="Step 4: Generate standardized candidate CSV via the selected adapter.",
     )
-    generate_candidates.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    generate_candidates.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
     generate_candidates.add_argument("--output-file", required=True, help="Standardized candidate CSV output path.")
     generate_candidates.add_argument("--candidate-budget", type=int, default=500)
     generate_candidates.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
@@ -158,13 +173,21 @@ def _build_cli() -> argparse.ArgumentParser:
     generate_candidates.add_argument("--device", default="cuda:0")
     generate_candidates.add_argument("--max-facts", type=int, default=None)
     generate_candidates.add_argument("--map-to-sjp-dataset-dir", default=None)
+    generate_candidates.add_argument("--top-m-relations", type=int, default=20, help="GFRT top-m relations per head.")
+    generate_candidates.add_argument("--top-n-tails", type=int, default=100, help="GFRT top-n tails per head.")
+    generate_candidates.add_argument("--top-k1", type=int, default=None, help="GFRT graph top-k1 override.")
+    generate_candidates.add_argument("--top-k2", type=int, default=None, help="GFRT graph top-k2 override.")
 
     train_ranking = sub.add_parser(
         "train-ranking-model",
         help="Step 5: Train model(s) used for final ranking.",
     )
-    train_ranking.add_argument("--adapter", choices=["sjp", "reta"], required=True)
-    train_ranking.add_argument("--path-dataset-dir", default=None, help="SJP path dataset root (train/val/test).")
+    train_ranking.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
+    train_ranking.add_argument(
+        "--path-dataset-dir",
+        default=None,
+        help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).",
+    )
     train_ranking.add_argument("--candidate-model-path", default=None, help="Trained SJP candidate model path.")
     train_ranking.add_argument("--path-setup", default="20_10")
     train_ranking.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
@@ -195,12 +218,21 @@ def _build_cli() -> argparse.ArgumentParser:
     train_ranking.add_argument("--negative-strategy", type=float, default=0.0)
     train_ranking.add_argument("--load", default="False", choices=["False", "preload", "True"])
     train_ranking.add_argument("--model-to-be-trained", default="")
+    train_ranking.add_argument("--embed-dim", type=int, default=100, help="GFRT embedding dimensionality.")
+    train_ranking.add_argument("--num-layers", type=int, default=2, help="GFRT number of GNN layers.")
+    train_ranking.add_argument("--top-k1", type=int, default=100, help="GFRT top-k entity neighbors per entity.")
+    train_ranking.add_argument("--top-k2", type=int, default=30, help="GFRT top-k relation neighbors per relation.")
+    train_ranking.add_argument("--batch-size", type=int, default=256, help="GFRT training batch size.")
+    train_ranking.add_argument("--lr-intra", type=float, default=0.01, help="GFRT intra-view learning rate.")
+    train_ranking.add_argument("--lr-inter", type=float, default=0.001, help="GFRT inter-view learning rate.")
+    train_ranking.add_argument("--margin", type=float, default=1.0, help="GFRT hinge margin.")
+    train_ranking.add_argument("--log-every", type=int, default=10, help="GFRT loss log interval in epochs.")
 
     rank_candidates = sub.add_parser(
         "rank-candidates",
         help="Step 6: Rank standardized candidates via the selected adapter.",
     )
-    rank_candidates.add_argument("--adapter", choices=["sjp", "reta"], required=True)
+    rank_candidates.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
     rank_candidates.add_argument("--candidate-file", required=True, help="Standardized candidate CSV input path.")
     rank_candidates.add_argument("--output-file", required=True, help="Standardized ranked CSV output path.")
     rank_candidates.add_argument("--ranking-model-path", required=True, help="Trained ranking model path.")
@@ -222,6 +254,8 @@ def _build_cli() -> argparse.ArgumentParser:
     rank_candidates.add_argument("--device", default="cuda:0")
     rank_candidates.add_argument("--max-facts", type=int, default=None)
     rank_candidates.add_argument("--map-to-sjp-dataset-dir", default=None)
+    rank_candidates.add_argument("--top-k1", type=int, default=None, help="GFRT graph top-k1 override.")
+    rank_candidates.add_argument("--top-k2", type=int, default=None, help="GFRT graph top-k2 override.")
 
     evaluate = sub.add_parser(
         "evaluate",
@@ -273,7 +307,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "prepare-dataset":
-        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
 
         delimiter = _normalise_delimiter(args.delimiter)
         if args.adapter == "sjp":
@@ -290,13 +324,23 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 has_header=args.has_header,
                 overwrite=args.overwrite,
             )
-        else:
+        elif args.adapter == "reta":
             reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
             adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.output_dir)
             summary = adapter.prepare_dataset(
                 standardized_dataset_dir=args.standard_dataset_dir,
                 output_dir=args.output_dir,
                 default_entity_type=args.default_entity_type,
+                triple_order=args.triple_order,
+                delimiter=delimiter,
+                has_header=args.has_header,
+                overwrite=args.overwrite,
+            )
+        else:
+            adapter = GFRTAdapter()
+            summary = adapter.prepare_dataset(
+                standardized_dataset_dir=args.standard_dataset_dir,
+                output_dir=args.output_dir,
                 triple_order=args.triple_order,
                 delimiter=delimiter,
                 has_header=args.has_header,
@@ -309,7 +353,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "train-candidate-model":
-        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
 
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
@@ -327,19 +371,40 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 skip_phase1=args.skip_phase1,
                 candidate_budget=args.candidate_budget,
             )
-        else:
+        elif args.adapter == "reta":
             reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
             if args.reta_data_dir is None:
                 raise ValueError("--reta-data-dir is required when --adapter reta")
             adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
             summary = adapter.train_candidate_model()
+        else:
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter gfrt")
+            adapter = GFRTAdapter()
+            summary = adapter.train_candidate_model(
+                path_dataset_dir=args.path_dataset_dir,
+                log_dir=args.log_dir,
+                expname=args.expname,
+                max_epochs=args.max_epochs,
+                embed_dim=args.embed_dim,
+                num_layers=args.num_layers,
+                top_k1=args.top_k1,
+                top_k2=args.top_k2,
+                batch_size=args.batch_size,
+                lr_intra=args.lr_intra,
+                lr_inter=args.lr_inter,
+                margin=args.margin,
+                log_every=args.log_every,
+                model_path=args.model_path,
+                load_model_path=args.load_model_path,
+            )
 
         summary["workflow_step"] = "train-candidate-model"
         print(json.dumps(summary, indent=2))
         return
 
     if args.command == "generate-candidates":
-        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
 
         if Path(args.output_file).suffix.lower() != ".csv":
             raise ValueError("--output-file must end with .csv for generate-candidates")
@@ -374,6 +439,39 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(json.dumps(summary, indent=2))
             return
 
+        if args.adapter == "gfrt":
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter gfrt")
+            if args.candidate_model_path is None:
+                raise ValueError("--candidate-model-path is required when --adapter gfrt")
+
+            adapter = GFRTAdapter()
+            predictions = adapter.generate_candidates(
+                output_file=args.output_file,
+                candidate_budget=args.candidate_budget,
+                path_dataset_dir=args.path_dataset_dir,
+                candidate_model_path=args.candidate_model_path,
+                top_m_relations=args.top_m_relations,
+                top_n_tails=args.top_n_tails,
+                top_k1=args.top_k1,
+                top_k2=args.top_k2,
+                device=args.device,
+                max_facts=args.max_facts,
+            )
+            summary = {
+                "workflow_step": "generate-candidates",
+                "adapter": "GFRT",
+                "output_file": str(Path(args.output_file).resolve()),
+                "candidate_budget": int(args.candidate_budget),
+                "num_heads": len(predictions),
+                "path_dataset_dir": str(Path(args.path_dataset_dir).resolve()),
+                "candidate_model_path": str(Path(args.candidate_model_path).resolve()),
+                "top_m_relations": int(args.top_m_relations),
+                "top_n_tails": int(args.top_n_tails),
+            }
+            print(json.dumps(summary, indent=2))
+            return
+
         reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
         if args.reta_data_dir is None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
@@ -404,7 +502,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "train-ranking-model":
-        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
 
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
@@ -426,7 +524,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 candidate_budget=args.candidate_budget,
                 skip_phase2=args.skip_phase2,
             )
-        else:
+        elif args.adapter == "reta":
             reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
             if args.reta_data_dir is None:
                 raise ValueError("--reta-data-dir is required when --adapter reta")
@@ -454,13 +552,34 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 load=args.load,
                 model_to_be_trained=args.model_to_be_trained,
             )
+        else:
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter gfrt")
+
+            adapter = GFRTAdapter()
+            summary = adapter.train_ranking_model(
+                path_dataset_dir=args.path_dataset_dir,
+                candidate_model_path=args.candidate_model_path,
+                log_dir=args.log_dir,
+                expname=args.expname,
+                max_epochs=args.max_epochs,
+                embed_dim=args.embed_dim,
+                num_layers=args.num_layers,
+                top_k1=args.top_k1,
+                top_k2=args.top_k2,
+                batch_size=args.batch_size,
+                lr_intra=args.lr_intra,
+                lr_inter=args.lr_inter,
+                margin=args.margin,
+                log_every=args.log_every,
+            )
 
         summary["workflow_step"] = "train-ranking-model"
         print(json.dumps(summary, indent=2))
         return
 
     if args.command == "rank-candidates":
-        from iswc.harmonized.adapters import RETAAdapter, SJPAdapter
+        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
 
         if Path(args.candidate_file).suffix.lower() != ".csv":
             raise ValueError("--candidate-file must end with .csv for rank-candidates")
@@ -490,6 +609,34 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "output_file": str(Path(args.output_file).resolve()),
                 "candidate_budget": int(args.candidate_budget),
                 "num_heads": len(predictions),
+                "ranking_model_path": str(Path(args.ranking_model_path).resolve()),
+            }
+            print(json.dumps(summary, indent=2))
+            return
+
+        if args.adapter == "gfrt":
+            if args.path_dataset_dir is None:
+                raise ValueError("--path-dataset-dir is required when --adapter gfrt")
+            adapter = GFRTAdapter()
+            predictions = adapter.rank_candidates(
+                candidate_file=args.candidate_file,
+                output_file=args.output_file,
+                candidate_budget=args.candidate_budget,
+                path_dataset_dir=args.path_dataset_dir,
+                ranking_model_path=args.ranking_model_path,
+                top_k1=args.top_k1,
+                top_k2=args.top_k2,
+                device=args.device,
+                max_facts=args.max_facts,
+            )
+            summary = {
+                "workflow_step": "rank-candidates",
+                "adapter": "GFRT",
+                "candidate_file": str(Path(args.candidate_file).resolve()),
+                "output_file": str(Path(args.output_file).resolve()),
+                "candidate_budget": int(args.candidate_budget),
+                "num_heads": len(predictions),
+                "path_dataset_dir": str(Path(args.path_dataset_dir).resolve()),
                 "ranking_model_path": str(Path(args.ranking_model_path).resolve()),
             }
             print(json.dumps(summary, indent=2))

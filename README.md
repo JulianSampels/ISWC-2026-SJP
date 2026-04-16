@@ -139,6 +139,7 @@ ISWC-2026-SJP/
    │   │   ├── base_adapter.py
    │   │   ├── sjp_adapter.py
    │   │   ├── reta_adapter.py
+   │   │   ├── gfrt_adapter.py
    │   │   ├── adapters.py
    │   │   └── README.md
    │   └── evaluation/
