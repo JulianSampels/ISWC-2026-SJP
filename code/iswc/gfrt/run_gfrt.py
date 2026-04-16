@@ -55,7 +55,7 @@ from iswc.gfrt import (
     GFRTTrainer,
     build_gfrt_pipeline,
 )
-from iswc.evaluation.evaluate import (
+from iswc.harmonized.metrics import (
     evaluate_model,
     format_results_table,
 )
@@ -274,7 +274,7 @@ def main() -> None:
             "k_t":        args.k_t,
             "margin":     args.margin,
             "budget":     args.max_candidates,
-            "metrics": metrics,
+            "metrics": metrics.to_dict(orient="records"),
         }
 
         results_path = out / f"gfrt_{args.dataset}_r{args.k_r}_t{args.k_t}.json"
