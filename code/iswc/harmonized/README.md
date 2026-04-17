@@ -53,6 +53,7 @@ python -m iswc.harmonized.interface prepare-dataset \
   --standard-dataset-dir ./iswc_data/standard/fb15k237 \
   --output-dir ./iswc_data/reta/fb15k237 \
   --default-entity-type Thing
+```
 
 GFRT:
 
@@ -61,7 +62,6 @@ python -m iswc.harmonized.interface prepare-dataset \
   --adapter gfrt \
   --standard-dataset-dir ./iswc_data/standard/fb15k237 \
   --output-dir ./iswc_data/gfrt/fb15k237
-```
 ```
 
 ## 3) Train Candidate Model
