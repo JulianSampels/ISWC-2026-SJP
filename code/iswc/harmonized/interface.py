@@ -19,8 +19,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+
+NUM_WORKERS_DEFAULT = cpu_count() // 2
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +131,7 @@ def _build_cli() -> argparse.ArgumentParser:
     train_candidate.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
     train_candidate.add_argument("--log-dir", default="./logs/harmonized")
     train_candidate.add_argument("--expname", default="harmonized_sjp")
-    train_candidate.add_argument("--num-workers", type=int, default=1)
+    train_candidate.add_argument("--num-workers", type=int, default=NUM_WORKERS_DEFAULT)
     train_candidate.add_argument("--max-epochs", type=int, default=100)
     train_candidate.add_argument("--tuple-checkpoint", default=None)
     train_candidate.add_argument("--skip-phase1", action="store_true", default=False)
@@ -160,7 +163,7 @@ def _build_cli() -> argparse.ArgumentParser:
     generate_candidates.add_argument("--path-setup", default="20_10")
     generate_candidates.add_argument("--log-dir", default="./logs/harmonized")
     generate_candidates.add_argument("--expname", default="harmonized_sjp")
-    generate_candidates.add_argument("--num-workers", type=int, default=1)
+    generate_candidates.add_argument("--num-workers", type=int, default=NUM_WORKERS_DEFAULT)
     generate_candidates.add_argument("--max-epochs", type=int, default=100)
     generate_candidates.add_argument("--sjp-code-dir", default=None)
     generate_candidates.add_argument("--reta-code-dir", default=None)
@@ -193,7 +196,7 @@ def _build_cli() -> argparse.ArgumentParser:
     train_ranking.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
     train_ranking.add_argument("--log-dir", default="./logs/harmonized")
     train_ranking.add_argument("--expname", default="harmonized_sjp")
-    train_ranking.add_argument("--num-workers", type=int, default=1)
+    train_ranking.add_argument("--num-workers", type=int, default=NUM_WORKERS_DEFAULT)
     train_ranking.add_argument("--max-epochs", type=int, default=100)
     train_ranking.add_argument("--triple-checkpoint", default=None)
     train_ranking.add_argument("--skip-phase2", action="store_true", default=False)
@@ -241,7 +244,7 @@ def _build_cli() -> argparse.ArgumentParser:
     rank_candidates.add_argument("--path-setup", default="20_10")
     rank_candidates.add_argument("--log-dir", default="./logs/harmonized")
     rank_candidates.add_argument("--expname", default="harmonized_sjp")
-    rank_candidates.add_argument("--num-workers", type=int, default=1)
+    rank_candidates.add_argument("--num-workers", type=int, default=NUM_WORKERS_DEFAULT)
     rank_candidates.add_argument("--max-epochs", type=int, default=100)
     rank_candidates.add_argument("--sjp-code-dir", default=None)
     rank_candidates.add_argument("--reta-code-dir", default=None)
