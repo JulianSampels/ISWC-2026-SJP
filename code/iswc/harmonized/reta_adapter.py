@@ -311,24 +311,27 @@ def export_standard_dataset_to_reta(
     # 2. Write the heuristic types to the entity mappings
     # If an entity is absent from the train set (inductive or isolated), we fall back to a default placeholder
     entity_type_file = reta_output / "entity2types_ttv.txt"
+    fallback_type_used = False
     with entity_type_file.open("w", encoding="utf-8") as handle:
         for label in sorted(entity_label_to_id.keys(), key=lambda x: entity_label_to_id[x]):
             types = entity_to_types[label]
             if not types:
                 handle.write(f"{label}\t{default_entity_type}\n")
+                fallback_type_used = True
             for t in sorted(types):
                 handle.write(f"{label}\t{t}\n")
 
     # 3. Link the heuristic relation schemas together
     type_relation_file = reta_output / "type2relation2type_ttv.txt"
     with type_relation_file.open("w", encoding="utf-8") as handle:
-        # We also create a fallback definition just in case 'default_entity_type' is triggered by unlinked entities
+        # Keep fallback schema entries only when fallback type was actually assigned.
         unique_relations = sorted(set(all_relation_labels_for_type_file))
         for relation_label in unique_relations:
             # Main heuristics
             handle.write(f"{relation_label}_domain\t{relation_label}\t{relation_label}_range\n")
             # Fallback heuristics for validation/test nodes that missed training
-            handle.write(f"{default_entity_type}\t{relation_label}\t{default_entity_type}\n")
+            if fallback_type_used:
+                handle.write(f"{default_entity_type}\t{relation_label}\t{default_entity_type}\n")
 
     with (reta_output / "entity2id.json").open("w", encoding="utf-8") as handle:
         json.dump(entity_label_to_id, handle, indent=2)
