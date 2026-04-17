@@ -209,22 +209,43 @@ python -m iswc.harmonized.interface rank-candidates \
   --output-file ./results/gfrt_ranked.csv
 ```
 
-When using GFRT prepared datasets, a numeric gold file is generated at
-`./iswc_data/gfrt/<dataset>/gold_test.csv` for step 7 evaluation.
-
 RETA ranking requires CUDA because RETA forward uses `.cuda(...)` in submodule model code.
 
 ## 7) Evaluate and Compare
 
-Evaluate one output file:
+Evaluate one output file (use the matching adapter gold file):
+
+SJP candidate metrics:
 
 ```bash
 python -m iswc.harmonized.interface evaluate \
   --stage candidates \
   --input-file ./results/sjp_candidates.csv \
-  --gold-triples ./iswc_data/sjp/fb15k237/test/triples.pt \
+  --gold-triples ./iswc_data/sjp/fb15k237/gold_test.csv \
   --k-values 1,3,5,10 \
   --output-csv ./results/sjp_candidates_metrics.csv
+```
+
+RETA candidate metrics:
+
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage candidates \
+  --input-file ./results/reta_candidates.csv \
+  --gold-triples ./iswc_data/reta/fb15k237/gold_test.csv \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/reta_candidates_metrics.csv
+```
+
+GFRT candidate metrics:
+
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage candidates \
+  --input-file ./results/gfrt_candidates.csv \
+  --gold-triples ./iswc_data/gfrt/fb15k237/gold_test.csv \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/gfrt_candidates_metrics.csv
 ```
 
 Compare multiple outputs:
@@ -232,9 +253,13 @@ Compare multiple outputs:
 ```bash
 python -m iswc.harmonized.interface compare \
   --stage ranking \
-  --gold-triples ./iswc_data/sjp/fb15k237/test/triples.pt \
+  --gold-triples ./iswc_data/sjp/fb15k237/gold_test.csv \
   --k-values 1,3,5,10 \
   --method SJP ./results/sjp_ranked.csv \
   --method RETA ./results/reta_ranked.csv \
   --output-json ./results/ranking_compare.json
 ```
+
+Note: use the matching adapter `gold_test.csv` (generated during `prepare-dataset`) for evaluation,
+and for cross-adapter comparison ensure all `--method` files are in the same ID space as
+`--gold-triples` (for example after mapping to SJP IDs).

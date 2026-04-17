@@ -122,11 +122,7 @@ def _build_cli() -> argparse.ArgumentParser:
         help="Step 3: Train model(s) used for candidate generation.",
     )
     train_candidate.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
-    train_candidate.add_argument(
-        "--path-dataset-dir",
-        default=None,
-        help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).",
-    )
+    train_candidate.add_argument("--path-dataset-dir", default=None, help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).")
     train_candidate.add_argument("--path-setup", default="20_10")
     train_candidate.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
     train_candidate.add_argument("--log-dir", default="./logs/harmonized")
@@ -186,11 +182,7 @@ def _build_cli() -> argparse.ArgumentParser:
         help="Step 5: Train model(s) used for final ranking.",
     )
     train_ranking.add_argument("--adapter", choices=["sjp", "reta", "gfrt"], required=True)
-    train_ranking.add_argument(
-        "--path-dataset-dir",
-        default=None,
-        help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).",
-    )
+    train_ranking.add_argument("--path-dataset-dir", default=None, help="Prepared dataset root (SJP path dataset or GFRT numeric dataset).")
     train_ranking.add_argument("--candidate-model-path", default=None, help="Trained SJP candidate model path.")
     train_ranking.add_argument("--path-setup", default="20_10")
     train_ranking.add_argument("--cmd", choices=["train", "resume", "test"], default="train")
@@ -262,30 +254,29 @@ def _build_cli() -> argparse.ArgumentParser:
 
     evaluate = sub.add_parser(
         "evaluate",
-        help="Step 7a: Evaluate one candidate/ranked CSV against gold triples.",
+        help=(
+            "Step 7a: Evaluate one candidate/ranked CSV against ID-aligned gold triples CSV "
+            "(columns: head_id, relation_id, tail_id)."
+        ),
     )
     evaluate.add_argument("--stage", choices=["candidates", "ranking"], required=True)
-    evaluate.add_argument("--input-file", required=True)
-    evaluate.add_argument("--gold-triples", required=True)
+    evaluate.add_argument("--input-file", required=True, help="Candidate/ranked CSV file produced by harmonized adapters.")
+    evaluate.add_argument("--gold-triples", required=True, help="Gold CSV with columns head_id, relation_id, tail_id in the same ID space as --input-file (for example <prepared_adapter_dir>/gold_test.csv).")
     evaluate.add_argument("--k-values", default="1,3,5,10")
     evaluate.add_argument("--name", default="Method")
     evaluate.add_argument("--output-csv", default=None)
 
     compare = sub.add_parser(
         "compare",
-        help="Step 7b: Compare multiple candidate/ranked CSV files against gold triples.",
+        help=(
+            "Step 7b: Compare multiple candidate/ranked CSV files against one ID-aligned "
+            "gold triples CSV (head_id, relation_id, tail_id)."
+        ),
     )
     compare.add_argument("--stage", choices=["candidates", "ranking"], required=True)
-    compare.add_argument("--gold-triples", required=True)
+    compare.add_argument("--gold-triples", required=True, help="Gold CSV with columns head_id, relation_id, tail_id in the same ID space as all method input CSVs (for example <prepared_adapter_dir>/gold_test.csv).")
     compare.add_argument("--k-values", default="1,3,5,10")
-    compare.add_argument(
-        "--method",
-        action="append",
-        nargs=2,
-        metavar=("NAME", "INPUT_FILE"),
-        required=True,
-        help="Add a method by name and input CSV path. Can be repeated.",
-    )
+    compare.add_argument("--method", action="append", nargs=2, metavar=("NAME", "INPUT_FILE"), required=True, help="Add a method by name and input CSV path. Can be repeated.")
     compare.add_argument("--output-json", default=None)
 
     return parser
@@ -681,6 +672,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.command == "evaluate":
         if Path(args.input_file).suffix.lower() != ".csv":
             raise ValueError("--input-file must end with .csv")
+        if Path(args.gold_triples).suffix.lower() != ".csv":
+            raise ValueError(
+                "--gold-triples must end with .csv and be ID-aligned with --input-file "
+                "(use adapter output <prepared_adapter_dir>/gold_test.csv)."
+            )
 
         k_values = parse_k_values(args.k_values)
         metrics_df = _evaluate_metrics(
@@ -711,6 +707,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "compare":
+        if Path(args.gold_triples).suffix.lower() != ".csv":
+            raise ValueError(
+                "--gold-triples must end with .csv and be ID-aligned with all --method input files "
+                "(use adapter output <prepared_adapter_dir>/gold_test.csv)."
+            )
+
+        for name, input_file in args.method:
+            if Path(input_file).suffix.lower() != ".csv":
+                raise ValueError(f"--method input for '{name}' must end with .csv")
+
         k_values = parse_k_values(args.k_values)
         compared: Dict[str, List[Dict[Any, Any]]] = {}
 

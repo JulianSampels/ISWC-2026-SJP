@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import uuid
+import csv
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -352,6 +353,17 @@ def _write_test_dataset_tsv(
     return counts
 
 
+def _write_id_triples_csv(path: Path, triples: Iterable[Tuple[int, int, int]]) -> int:
+    count = 0
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["head_id", "relation_id", "tail_id"])
+        for head_id, relation_id, tail_id in triples:
+            writer.writerow([int(head_id), int(relation_id), int(tail_id)])
+            count += 1
+    return count
+
+
 def export_standardized_dataset_to_sjp(
     standardized_dataset_dir: str | Path,
     output_dir: str | Path,
@@ -440,6 +452,21 @@ def export_standardized_dataset_to_sjp(
 
         shutil.copytree(generated_root, output_path, dirs_exist_ok=True)
 
+        test_triples_path = output_path / "test" / "triples.pt"
+        if test_triples_path.is_file():
+            test_tensor = torch.load(test_triples_path, map_location="cpu")
+            if not isinstance(test_tensor, torch.Tensor):
+                raise ValueError(f"Expected tensor in {test_triples_path}, got {type(test_tensor)}")
+            if test_tensor.dim() != 2 or test_tensor.size(1) != 3:
+                raise ValueError(
+                    f"Expected test triples shape [N, 3] in {test_triples_path}, observed {tuple(test_tensor.shape)}"
+                )
+            _write_id_triples_csv(output_path / "gold_test.csv", test_tensor.tolist())
+        else:
+            raise FileNotFoundError(
+                f"SJP prepared dataset is missing expected test triples file: {test_triples_path}"
+            )
+
         summary = {
             "standardized_dataset_dir": str(standardized.root),
             "sjp_output_dir": str(output_path),
@@ -448,6 +475,7 @@ def export_standardized_dataset_to_sjp(
             "parallel": bool(parallel),
             "inverse_mode": inverse_mode,
             "split_counts": generated_counts,
+            "gold_triples_file": str(output_path / "gold_test.csv"),
         }
         metadata_path = output_path / "harmonized_standard_source.json"
         with metadata_path.open("w", encoding="utf-8") as handle:

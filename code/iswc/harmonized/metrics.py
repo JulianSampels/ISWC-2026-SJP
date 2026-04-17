@@ -140,7 +140,10 @@ def load_gold_pairs_by_head_csv(gold_file: str | Path) -> GoldPairsByHead:
     """Load standardized gold triples CSV and group (relation, tail) by head."""
     gold_path = Path(gold_file).resolve()
     if gold_path.suffix.lower() != ".csv":
-        raise ValueError("Gold triples file must be .csv")
+        raise ValueError(
+            "Gold triples file must be .csv with columns head_id, relation_id, tail_id "
+            "in the same ID space as the evaluated predictions."
+        )
 
     frame = pd.read_csv(gold_path)
     required = {"head_id", "relation_id", "tail_id"}

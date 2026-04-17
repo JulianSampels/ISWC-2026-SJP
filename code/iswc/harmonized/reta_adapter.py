@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import csv
 import importlib
 import json
 import logging
@@ -259,6 +260,17 @@ def _build_label_to_id_from_standard(
     return entity_label_to_id, relation_label_to_id
 
 
+def _write_id_triples_csv(path: Path, triples: List[Tuple[int, int, int]]) -> int:
+    count = 0
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["head_id", "relation_id", "tail_id"])
+        for head_id, relation_id, tail_id in triples:
+            writer.writerow([int(head_id), int(relation_id), int(tail_id)])
+            count += 1
+    return count
+
+
 def export_standard_dataset_to_reta(
     standardized_dataset_dir: str | Path,
     output_dir: str | Path,
@@ -338,12 +350,23 @@ def export_standard_dataset_to_reta(
     with (reta_output / "relation2id.json").open("w", encoding="utf-8") as handle:
         json.dump(relation_label_to_id, handle, indent=2)
 
+    gold_test_rows = [
+        (
+            int(entity_label_to_id[head]),
+            int(relation_label_to_id[relation]),
+            int(entity_label_to_id[tail]),
+        )
+        for head, relation, tail in triples_by_split["test"]
+    ]
+    _write_id_triples_csv(reta_output / "gold_test.csv", gold_test_rows)
+
     summary = {
         "standardized_dataset_dir": str(standardized.root),
         "reta_output_dir": str(reta_output),
         "num_entities": len(entity_label_to_id),
         "num_relations": len(relation_label_to_id),
         "default_entity_type": default_entity_type,
+        "gold_triples_file": str(reta_output / "gold_test.csv"),
     }
     metadata_path = reta_output / "harmonized_export_metadata.json"
     with metadata_path.open("w", encoding="utf-8") as handle:
