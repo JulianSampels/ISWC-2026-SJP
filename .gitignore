@@ -200,7 +200,8 @@ cython_debug/
 cuda_11.8*
 cuda-repo-wsl*
 
-/logs/*
+/code/logs/*
+/code/results/*
 
 .DS_Store
 memory
