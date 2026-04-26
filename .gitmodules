@@ -1,6 +1,6 @@
 [submodule "code/RETA_code"]
-	path = code/RETA_code
-	url = https://github.com/eXascaleInfolab/RETA_code.git
+  path = code/RETA_code
+  url = git@github.com:eXascaleInfolab/RETA_code.git
 [submodule "code/SJP_code"]
-	path = code/SJP_code
-	url = https://github.com/JulianSampels/Split-Join-Predict.git
+  path = code/SJP_code
+  url = git@github.com:JulianSampels/Split-Join-Predict.git
