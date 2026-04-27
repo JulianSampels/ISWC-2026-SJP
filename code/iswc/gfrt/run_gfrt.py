@@ -100,7 +100,8 @@ def main() -> None:
                         help="Top-k relations to select per head (candidate generation).")
     parser.add_argument("--k-t",              type=int,   default=100,
                         help="Top-k tail entities to select per head (candidate generation).")
-    parser.add_argument("--max-candidate", type=int,   default=200,
+    parser.add_argument("--max-candidates", "--max-candidate", dest="max_candidates",
+                        type=int, default=None,
                         help="Maximum (r, t) candidates returned per head.")
     parser.add_argument("--batch-size",       type=int,   default=256,
                         help="Training batch size (triples per step).")
@@ -159,9 +160,10 @@ def main() -> None:
     top_k1 = args.top_k1 if args.top_k1 is not None else (20  if is_umls else 100)
     top_k2 = args.top_k2 if args.top_k2 is not None else (10  if is_umls else 30)
     logger.info(f"  Graph construction: top_k1={top_k1}, top_k2={top_k2}")
-    args.max_candidates = args.k_r * args.k_t
+    candidate_budget = args.max_candidates
+    if candidate_budget is None:
+        candidate_budget = args.k_r * args.k_t
 
-    args.save_model = args.load_model = f'iswc_data/cache/models/gfrt_{args.dataset}.pt'
     # ── Build graphs and model ────────────────────────────────────────────────
     logger.info("Building GFRT graphs …")
     t0 = time.time()
@@ -252,7 +254,7 @@ def main() -> None:
         ground_truth=ground_truth,
         cache_dir=Path(f"iswc_data/cache/candidates/gfrt_r{args.k_r}_t{args.k_t}"),
         batch_size=256,
-        max_candidates=args.max_candidates,
+        max_candidates=candidate_budget,
     )
 
     # ── Print results ─────────────────────────────────────────────────────────
@@ -273,7 +275,7 @@ def main() -> None:
             "k_r":        args.k_r,
             "k_t":        args.k_t,
             "margin":     args.margin,
-            "budget":     args.max_candidates,
+            "budget":     candidate_budget,
             "metrics": metrics.to_dict(orient="records"),
         }
 

@@ -162,15 +162,20 @@ def _load_predictions_from_csv(candidate_path: Path) -> RankedPredictions:
         has_rank = any(item[3] is not None for item in items)
         has_score = any(item[2] is not None for item in items)
 
+        rank_order_is_authoritative = False
         if has_rank:
             items.sort(key=lambda x: x[3] if x[3] is not None else 10**18)
+            rank_order_is_authoritative = True
         elif has_score:
             items.sort(
                 key=lambda x: float(x[2]) if x[2] is not None else float("-inf"),
                 reverse=True,
             )
 
-        predictions[head_id] = _dedupe_ranked_pairs((r, t, s) for r, t, s, _ in items)
+        predictions[head_id] = _dedupe_ranked_pairs(
+            (r, t, None if rank_order_is_authoritative else s)
+            for r, t, s, _ in items
+        )
 
     return predictions
 

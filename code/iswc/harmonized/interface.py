@@ -61,7 +61,13 @@ def _validate_reta_top_nfilters(value: int, command: str) -> None:
         )
 
 
-def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Path, k_values: Sequence[int]):
+def _evaluate_metrics(
+    stage: str,
+    input_file: str | Path,
+    gold_triples: str | Path,
+    k_values: Sequence[int],
+    filter_triples: str | Path | None = None,
+):
     from iswc.harmonized.metrics import (
         evaluate_candidate_metrics_from_files,
         evaluate_ranked_metrics_from_files,
@@ -77,6 +83,7 @@ def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Pa
         ranked_csv=input_file,
         gold_triples_file=gold_triples,
         k_values=list(k_values),
+        filter_triples_file=filter_triples,
     )
 
 
@@ -262,6 +269,7 @@ def _build_cli() -> argparse.ArgumentParser:
     evaluate.add_argument("--stage", choices=["candidates", "ranking"], required=True)
     evaluate.add_argument("--input-file", required=True, help="Candidate/ranked CSV file produced by harmonized adapters.")
     evaluate.add_argument("--gold-triples", required=True, help="Gold CSV with columns head_id, relation_id, tail_id in the same ID space as --input-file (for example <prepared_adapter_dir>/gold_test.csv).")
+    evaluate.add_argument("--filter-triples", default=None, help="Optional CSV of all known true triples for filtered ranking metrics. Defaults to --gold-triples only.")
     evaluate.add_argument("--k-values", default="1,3,5,10")
     evaluate.add_argument("--name", default="Method")
     evaluate.add_argument("--output-csv", default=None)
@@ -275,6 +283,7 @@ def _build_cli() -> argparse.ArgumentParser:
     )
     compare.add_argument("--stage", choices=["candidates", "ranking"], required=True)
     compare.add_argument("--gold-triples", required=True, help="Gold CSV with columns head_id, relation_id, tail_id in the same ID space as all method input CSVs (for example <prepared_adapter_dir>/gold_test.csv).")
+    compare.add_argument("--filter-triples", default=None, help="Optional CSV of all known true triples for filtered ranking metrics. Defaults to --gold-triples only.")
     compare.add_argument("--k-values", default="1,3,5,10")
     compare.add_argument("--method", action="append", nargs=2, metavar=("NAME", "INPUT_FILE"), required=True, help="Add a method by name and input CSV path. Can be repeated.")
     compare.add_argument("--output-json", default=None)
@@ -684,6 +693,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             input_file=args.input_file,
             gold_triples=args.gold_triples,
             k_values=k_values,
+            filter_triples=args.filter_triples,
         )
 
         metrics = metrics_df.to_dict(orient="records")
@@ -694,6 +704,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "stage": args.stage,
             "input_file": str(Path(args.input_file).resolve()),
             "gold_triples": str(Path(args.gold_triples).resolve()),
+            "filter_triples": None if args.filter_triples is None else str(Path(args.filter_triples).resolve()),
             "metrics": metrics,
         }
 
@@ -726,6 +737,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 input_file=input_file,
                 gold_triples=args.gold_triples,
                 k_values=k_values,
+                filter_triples=args.filter_triples,
             )
             compared[name] = metrics_df.to_dict(orient="records")
 
@@ -733,6 +745,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "workflow_step": "compare",
             "stage": args.stage,
             "gold_triples": str(Path(args.gold_triples).resolve()),
+            "filter_triples": None if args.filter_triples is None else str(Path(args.filter_triples).resolve()),
             "k_values": list(k_values),
             "results": compared,
         }

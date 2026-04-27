@@ -398,8 +398,10 @@ class SJPAdapter(CandidateAdapter):
         )
 
         candidates_test, _ = cand_test
+        # SJP's global generator already uses candidate_budget as an average
+        # graph-level cap (num_test_heads * candidate_budget). Applying a
+        # second per-head cap here would change the intended dynamic allocation.
         predictions = self._group_candidate_tensor(candidates_test, cand_scores)
-        predictions = apply_candidate_budget(predictions, int(candidate_budget))
         save_ranked_predictions(predictions, output_file)
         return predictions
 

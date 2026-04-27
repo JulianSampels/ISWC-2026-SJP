@@ -117,8 +117,10 @@ def load_ranked_predictions_csv(candidate_file: str | Path) -> RankedPredictions
     has_rank = "rank" in frame.columns and frame["rank"].notna().any()
     has_score = "score" in frame.columns and frame["score"].notna().any()
 
+    rank_order_is_authoritative = False
     if has_rank:
         frame = frame.sort_values(["head_id", "rank"], ascending=[True, True], na_position="last")
+        rank_order_is_authoritative = True
     elif has_score:
         frame = frame.sort_values(["head_id", "score"], ascending=[True, False], na_position="last")
 
@@ -128,7 +130,7 @@ def load_ranked_predictions_csv(candidate_file: str | Path) -> RankedPredictions
     for _, sub in frame.groupby("head_id", sort=False):
         head_id = int(sub["head_id"].iloc[0])
         rows = [
-            (int(r), int(t), None if pd.isna(s) else float(s))
+            (int(r), int(t), None if rank_order_is_authoritative or pd.isna(s) else float(s))
             for r, t, s in zip(sub["relation_id"], sub["tail_id"], score_col.loc[sub.index])
         ]
         predictions[head_id] = _dedupe_ranked_rows(rows)
@@ -185,13 +187,17 @@ def evaluate_candidate_metrics(
     b2fh_sum = 0.0
     b2fh_count = 0
     
-    max_candidate_len = max((len(rows) for rows in predictions.values()), default=0)
+    relevant_candidate_lengths = [len(predictions.get(head_id, [])) for head_id in gold_pairs_by_head]
+    max_candidate_len = max(relevant_candidate_lengths, default=0)
+    heads_with_candidates = 0
 
     for head_id, gold_pairs in gold_pairs_by_head.items():
         n_heads += 1
         n_triples += len(gold_pairs)
 
         ranked_rows = predictions.get(head_id, [])
+        if ranked_rows:
+            heads_with_candidates += 1
         total_candidate_size += len(ranked_rows)
 
         labels = torch.tensor([(r, t) in gold_pairs for r, t, _ in ranked_rows], dtype=torch.bool)
@@ -217,16 +223,20 @@ def evaluate_candidate_metrics(
     rows = [
         _metric_row("total candidate size", total_candidate_size_f),
         _metric_row("average candidate size (head)", total_candidate_size_f / float(n_heads_safe)),
+        _metric_row("avg_candidate_size", total_candidate_size_f / float(n_heads_safe)),
         _metric_row(
             "relative candidate size (triple)",
             total_candidate_size_f / n_triples_f if n_triples_f > 0.0 else 0.0,
         ),
         _metric_row("coverage_macro", coverage_macro_sum / float(n_heads_safe)),
         _metric_row("coverage_micro", float(total_hits) / n_triples_f if n_triples_f > 0.0 else 0.0),
+        _metric_row("candidate_coverage", float(total_hits) / n_triples_f if n_triples_f > 0.0 else 0.0),
         _metric_row("density_macro", density_macro_sum / float(n_heads_safe)),
         _metric_row("density_micro", float(total_hits) / total_candidate_size_f if total_candidate_size_f > 0.0 else 0.0),
         _metric_row("budget_to_first_hit_macro", b2fh_sum / float(n_heads_safe)),
         _metric_row("budget_to_first_hit_coverage_macro", float(b2fh_count) / float(n_heads_safe)),
+        _metric_row("head_candidate_coverage", float(heads_with_candidates) / float(n_heads_safe)),
+        _metric_row("heads_with_zero_candidates", float(n_heads - heads_with_candidates)),
         _metric_row("n_heads", float(n_heads)),
         _metric_row("n_triples", n_triples_f),
     ]
@@ -249,7 +259,12 @@ def evaluate_ranked_metrics(
       (optimistic_rank + pessimistic_rank) / 2.
     """
     parsed_k = _validate_k_values(k_values)
-    filter_pairs = gold_pairs_by_head if filter_pairs_by_head is None else filter_pairs_by_head
+    if filter_pairs_by_head is None:
+        filter_pairs = gold_pairs_by_head
+    else:
+        filter_pairs = {int(head_id): set(pairs) for head_id, pairs in filter_pairs_by_head.items()}
+        for head_id, gold_pairs in gold_pairs_by_head.items():
+            filter_pairs.setdefault(int(head_id), set()).update(gold_pairs)
 
     candidate_df = evaluate_candidate_metrics(
         predictions=predictions,
@@ -499,10 +514,16 @@ def evaluate_ranked_metrics_from_files(
     ranked_csv: str | Path,
     gold_triples_file: str | Path,
     k_values: Sequence[int],
+    filter_triples_file: Optional[str | Path] = None,
 ) -> pd.DataFrame:
     predictions = load_ranked_predictions_csv(ranked_csv)
     gold_pairs_by_head = load_gold_pairs_by_head_csv(gold_triples_file)
-    return evaluate_ranked_metrics(predictions, gold_pairs_by_head, k_values)
+    filter_pairs_by_head = (
+        load_gold_pairs_by_head_csv(filter_triples_file)
+        if filter_triples_file is not None
+        else None
+    )
+    return evaluate_ranked_metrics(predictions, gold_pairs_by_head, k_values, filter_pairs_by_head)
 
 
 def save_metrics_csv(metrics_df: pd.DataFrame, output_file: str | Path) -> Path:

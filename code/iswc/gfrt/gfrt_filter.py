@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple  # noqa: F401
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.optim as optim
@@ -71,56 +71,62 @@ class GFRTTrainer:
             lr=lr_inter,
         )
 
-        # Precompute training pair lists for quick sampling
-        self._train_np = train_triples.numpy()
-
     def train_epoch(self, batch_size: int = 256) -> Dict[str, float]:
         """
-        Run one training epoch. Returns dict of losses.
+        Run one full-data training epoch. Returns average losses.
         """
         self.model.train()
 
-        # --- Intra-view pass ---
-        h_emb, rH_emb, t_emb, rT_emb = self.model(
-            self.graph_H, self.graph_T, self.device
-        )
+        n_train = int(self.train_triples.size(0))
+        permutation = torch.randperm(n_train)
+        sum_loss_h = 0.0
+        sum_loss_t = 0.0
+        sum_loss_c = 0.0
+        n_batches = 0
 
-        idx   = torch.randperm(len(self._train_np))[:batch_size]
-        batch = self.train_triples[idx].to(self.device)
-        pos_h, pos_r, pos_t = batch[:, 0], batch[:, 1], batch[:, 2]
+        for start in range(0, n_train, batch_size):
+            idx = permutation[start:start + batch_size]
+            batch = self.train_triples[idx].to(self.device)
+            pos_h, pos_r, pos_t = batch[:, 0], batch[:, 1], batch[:, 2]
 
-        loss_H = self.model.intra_loss(
-            pos_h, pos_r, pos_t,
-            h_emb, rH_emb, t_emb, rT_emb,
-            is_head_graph=True,
-        )
-        loss_T = self.model.intra_loss(
-            pos_h, pos_r, pos_t,
-            h_emb, rH_emb, t_emb, rT_emb,
-            is_head_graph=False,
-        )
+            # --- Intra-view step ---
+            h_emb, rH_emb, t_emb, rT_emb = self.model(
+                self.graph_H, self.graph_T, self.device
+            )
+            loss_H = self.model.intra_loss(
+                pos_h, pos_r, pos_t,
+                h_emb, rH_emb, t_emb, rT_emb,
+                is_head_graph=True,
+            )
+            loss_T = self.model.intra_loss(
+                pos_h, pos_r, pos_t,
+                h_emb, rH_emb, t_emb, rT_emb,
+                is_head_graph=False,
+            )
 
-        self.opt_intra.zero_grad()
-        (loss_H + loss_T).backward()
-        self.opt_intra.step()
+            self.opt_intra.zero_grad()
+            (loss_H + loss_T).backward()
+            self.opt_intra.step()
+            self.model.normalize_embeddings()
 
-        # --- Inter-view pass (fresh forward after intra update) ---
-        # opt_intra.step() mutates embedding tensors in-place, so loss_C must
-        # be computed from a new forward pass to avoid stale graph errors.
-        h_emb2, _, t_emb2, _ = self.model(self.graph_H, self.graph_T, self.device)
-        loss_C = self.model.inter_view_loss(self.aligned_entities, h_emb2, t_emb2)
+            # --- Inter-view step ---
+            h_emb2, _, t_emb2, _ = self.model(self.graph_H, self.graph_T, self.device)
+            loss_C = self.model.inter_view_loss(self.aligned_entities, h_emb2, t_emb2)
 
-        self.opt_inter.zero_grad()
-        loss_C.backward()
-        self.opt_inter.step()
+            self.opt_inter.zero_grad()
+            loss_C.backward()
+            self.opt_inter.step()
+            self.model.normalize_embeddings()
 
-        # L2-normalise all embeddings after each gradient step (MVF paper §3.3)
-        self.model.normalize_embeddings()
+            sum_loss_h += float(loss_H.item())
+            sum_loss_t += float(loss_T.item())
+            sum_loss_c += float(loss_C.item())
+            n_batches += 1
 
         return {
-            "loss_H":     loss_H.item(),
-            "loss_T":     loss_T.item(),
-            "loss_cross": loss_C.item(),
+            "loss_H":     sum_loss_h / max(n_batches, 1),
+            "loss_T":     sum_loss_t / max(n_batches, 1),
+            "loss_cross": sum_loss_c / max(n_batches, 1),
         }
 
     @torch.no_grad()
@@ -140,10 +146,9 @@ class GFRTFilter:
 
     Candidate generation (Section 4.3 in MVF paper, "without type information"):
       1. Select top-m relations for h (from head-rel score f(h, r_H)).
-      2. Select top-n tail entities for each h (from tail-rel score f(h, t_T) — not
-         directly, so we use the entity-side embedding similarity in G_T).
+      2. For each selected relation, select top-n tail entities by f(t, r_T).
       3. Score all (r, t) pairs from {top-m relations} × {top-n tail candidates}
-         using the combined score S_t = f(h, r_H) + f(t, r_T) + 1.
+         using the combined score S_t = f(h, r_H) + f(t, r_T).
       4. Select top-x pairs as final candidates.
 
     This corresponds to the "without type information" protocol in the MVF paper.
@@ -168,8 +173,7 @@ class GFRTFilter:
         self.top_m   = top_m_relations
         self.top_n   = top_n_tails
 
-        # Build a relation-side tail index from training triples
-        # (r -> set of observed tails) for faster candidate selection
+        # Kept for downstream diagnostics and optional schema-aware extensions.
         self._r_to_tails: Dict[int, List[int]] = defaultdict(list)
         triples_np = train_triples.numpy() if isinstance(train_triples, Tensor) else train_triples
         for h, r, t in triples_np:
@@ -201,16 +205,13 @@ class GFRTFilter:
         rel_scores = (h_e.unsqueeze(0) * self.rH_emb).sum(dim=-1)  # (R,)
         top_m_rels = rel_scores.topk(min(self.top_m, num_relations)).indices.tolist()
 
-        # Step 2: Top-n tail entities using mean rT embedding of top-m relations as query.
-        # f(t, r_T) = t · r_T; query = mean(rT[top_m_rels]) aggregates relation context.
-        rT_query    = self.rT_emb[torch.tensor(top_m_rels, device=self.rT_emb.device)].mean(0)  # (D,)
-        tail_scores = (self.t_emb * rT_query.unsqueeze(0)).sum(dim=-1)   # (E,)
-        top_n_tails = tail_scores.topk(min(self.top_n, num_entities)).indices.tolist()
-
-        # Step 3: Score all (r, t) combinations
+        # Step 2/3: select relation-conditioned tails and score (r, t) pairs.
         candidates: List[Tuple[int, int, int, float]] = []
 
         for r in top_m_rels:
+            tail_scores = (self.t_emb * self.rT_emb[r].unsqueeze(0)).sum(dim=-1)
+            top_n_tails = tail_scores.topk(min(self.top_n, num_entities)).indices.tolist()
+
             r_tensor = torch.tensor([r] * len(top_n_tails), dtype=torch.long, device=device)
             t_tensor = torch.tensor(top_n_tails, dtype=torch.long, device=device)
             h_tensor = torch.full_like(r_tensor, head)

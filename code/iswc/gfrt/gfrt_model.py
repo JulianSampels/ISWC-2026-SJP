@@ -155,7 +155,7 @@ class IntraViewGNN(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.node_emb  = nn.Embedding(total_nodes, embed_dim)
-        nn.init.xavier_uniform_(self.node_emb.weight)
+        nn.init.normal_(self.node_emb.weight, mean=0.0, std=1.0)
 
         self.layers = nn.ModuleList([
             AttentionGNNLayer(embed_dim) for _ in range(num_layers)

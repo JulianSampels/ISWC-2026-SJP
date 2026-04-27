@@ -24,11 +24,10 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import torch
-from scipy.sparse import coo_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +130,13 @@ def build_head_relation_graph(
     graph.rr_weight = torch.tensor(rr_w,   dtype=torch.float)
 
     # ------ Entity-relation edges ------
-    er_src_list, er_dst_list = [], []
-    for h, r, _ in triples_np:
-        h, r = int(h), int(r)
-        er_src_list.append(h)
-        er_dst_list.append(num_entities + r)
+    # G_H contains one edge per observed (head, relation) pair. Repeating the
+    # same pair once per triple would change attention weights away from the
+    # graph described in the paper.
+    er_edges = sorted((int(h), num_entities + int(r)) for h, r, _ in triples_np)
+    er_edges = list(dict.fromkeys(er_edges))
+    er_src_list = [h for h, _ in er_edges]
+    er_dst_list = [r_node for _, r_node in er_edges]
     graph.er_src = torch.tensor(er_src_list, dtype=torch.long)
     graph.er_dst = torch.tensor(er_dst_list, dtype=torch.long)
 
@@ -199,11 +200,11 @@ def build_tail_relation_graph(
     graph.rr_weight = torch.tensor(rr_w,   dtype=torch.float)
 
     # ------ Entity-relation edges ------
-    er_src_list, er_dst_list = [], []
-    for _, r, t in triples_np:
-        r, t = int(r), int(t)
-        er_src_list.append(t)
-        er_dst_list.append(num_entities + r)
+    # G_T contains one edge per observed (tail, relation) pair.
+    er_edges = sorted((int(t), num_entities + int(r)) for _, r, t in triples_np)
+    er_edges = list(dict.fromkeys(er_edges))
+    er_src_list = [t for t, _ in er_edges]
+    er_dst_list = [r_node for _, r_node in er_edges]
     graph.er_src = torch.tensor(er_src_list, dtype=torch.long)
     graph.er_dst = torch.tensor(er_dst_list, dtype=torch.long)
 

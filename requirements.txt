@@ -1,0 +1,56 @@
+# Consolidated runtime dependencies for:
+# - code/iswc
+# - code/RETA_code
+# - code/SJP_code
+#
+# Notes:
+# - Install PyTorch wheels appropriate for your CUDA/CPU platform.
+# - `torch-scatter` is intentionally not installed by this file. It is required
+#   by the SJP/PathE candidate code, but its package metadata is not uv build
+#   isolation friendly and the wheel URL depends on your torch/platform combo.
+#   Install it after torch, e.g.:
+#     uv pip install torch-scatter --no-build-isolation
+#   or use a PyG wheel URL matching your torch build:
+#     https://data.pyg.org/whl/
+# - `code/SJP_code/PathE/pathe/requirements.txt` is a frozen historical
+#   environment; this file lists the direct dependencies used by this repository.
+
+# Core numerical / data stack
+numpy>=1.24,<2.0
+pandas>=1.5
+scipy>=1.10
+scikit-learn>=1.2
+pyarrow>=12.0
+tqdm>=4.64
+joblib>=1.2
+requests>=2.28
+psutil>=5.9
+more-itertools>=9.0
+pytictoc>=1.5
+
+# PyTorch / KG modeling
+torch>=2.1
+torchvision>=0.16
+torchmetrics>=1.2
+pytorch-lightning>=1.9,<2.0
+pykeen>=1.10,<1.11
+
+# Graphs, plotting, and analysis scripts
+igraph>=0.10
+matplotlib>=3.7
+seaborn>=0.13
+
+# RETA preprocessing
+tensorflow>=2.13
+
+# RAG / QA datasets and retrieval
+datasets>=2.18
+rank-bm25>=0.2
+sentence-transformers>=2.6
+openai>=1.0
+google-generativeai>=0.5
+anthropic>=0.25
+
+# Experiment logging used by PathE/SJP when enabled
+tensorboard>=2.12
+wandb>=0.15
