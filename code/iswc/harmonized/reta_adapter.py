@@ -11,6 +11,7 @@ import pickle
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -424,36 +425,59 @@ def _prepare_reta_runtime(
     )
 
     type_id_to_frequency = reta.build_typeId2frequency(str(reta_data_path), type2id)
-
-    head_tail_to_types, entity_id_to_type_ids = reta.build_headTail2hTypetType(
-        str(reta_data_path),
-        entity2id,
-        type2id,
-        entity_name_to_types,
-        sparsifier,
-        type_id_to_frequency,
-        build_type_dictionaries,
-    )
-
-    _, test, _ = reta.add_type_pair_to_fact([], test, [], head_tail_to_types, entity_id_to_type_ids, unk_type_id)
-
     type2relation_type_frequency = reta.build_type2relationType2frequency(
         str(reta_data_path), build_type_dictionaries
     )
 
-    type_head_tail_entity_matrix, tail_type_relation_head_type_tensor = reta.build_tensor_matrix(
-        str(reta_data_path),
-        entity2id,
-        relation2id,
-        entity_name_to_types,
-        top_nfilters,
-        type2relation_type_frequency,
-        entity_id_to_type_ids,
-        type2id,
-        id2type,
-        device,
-        entities_evaluated,
-    )
+    # RETA upstream helpers build several structures from both train and test files.
+    # For fair candidate evaluation we must avoid using test triples to build these.
+    with tempfile.TemporaryDirectory(prefix="reta_train_only_") as tmp_dir:
+        train_only_dir = Path(tmp_dir)
+
+        train_txt = reta_data_path / "train.txt"
+        nary_train = reta_data_path / "n-ary_train.json"
+        if not train_txt.is_file() or not nary_train.is_file():
+            raise FileNotFoundError(
+                "RETA data directory must contain train.txt and n-ary_train.json "
+                "to build train-only runtime structures."
+            )
+
+        shutil.copy2(train_txt, train_only_dir / "train.txt")
+        shutil.copy2(nary_train, train_only_dir / "n-ary_train.json")
+        (train_only_dir / "test.txt").write_text("", encoding="utf-8")
+        (train_only_dir / "n-ary_test.json").write_text("", encoding="utf-8")
+
+        if str(build_type_dictionaries) != "True":
+            logger.warning(
+                "Ignoring build_type_dictionaries=%s for runtime filter structures to prevent test leakage.",
+                build_type_dictionaries,
+            )
+
+        head_tail_to_types, entity_id_to_type_ids = reta.build_headTail2hTypetType(
+            str(train_only_dir),
+            entity2id,
+            type2id,
+            entity_name_to_types,
+            sparsifier,
+            type_id_to_frequency,
+            "True",
+        )
+
+        type_head_tail_entity_matrix, tail_type_relation_head_type_tensor = reta.build_tensor_matrix(
+            str(train_only_dir),
+            entity2id,
+            relation2id,
+            entity_name_to_types,
+            top_nfilters,
+            type2relation_type_frequency,
+            entity_id_to_type_ids,
+            type2id,
+            id2type,
+            device,
+            entities_evaluated,
+        )
+
+    _, test, _ = reta.add_type_pair_to_fact([], test, [], head_tail_to_types, entity_id_to_type_ids, unk_type_id)
 
     entity2sparsified_types = reta.build_entity2sparsifiedTypes(
         type_id_to_frequency,

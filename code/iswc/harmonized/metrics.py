@@ -191,7 +191,8 @@ def evaluate_candidate_metrics(
         n_heads += 1
         n_triples += len(gold_pairs)
 
-        ranked_rows = predictions.get(head_id, [])
+        # Defensive dedupe: callers may pass in-memory predictions without prior normalization.
+        ranked_rows = _dedupe_ranked_rows(predictions.get(head_id, []))
         total_candidate_size += len(ranked_rows)
 
         labels = torch.tensor([(r, t) in gold_pairs for r, t, _ in ranked_rows], dtype=torch.bool)
@@ -271,7 +272,8 @@ def evaluate_ranked_metrics(
     for head_id, gold_pairs in gold_pairs_by_head.items():
         n_heads += 1
         reciprocal_rank_count += len(gold_pairs)
-        ranked_rows = predictions.get(head_id, [])
+        # Defensive dedupe keeps candidate and ranking metrics consistent.
+        ranked_rows = _dedupe_ranked_rows(predictions.get(head_id, []))
         if not ranked_rows:
             continue
 
