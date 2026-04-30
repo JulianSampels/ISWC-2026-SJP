@@ -22,7 +22,6 @@ python -m iswc.harmonized.interface --help
 - `sjp_adapter.py`: all SJP-specific dataset preparation, training, candidate generation, and ranking logic.
 - `reta_adapter.py`: all RETA-specific dataset preparation, dictionary/runtime helpers, training, candidate generation, and ranking logic.
 - `gfrt_adapter.py`: GFRT-specific numeric dataset preparation, GFRT model training, candidate generation, and candidate re-ranking.
-- `adapters.py`: compatibility exports for existing imports.
 
 ## 1) Generate Standardized Dataset
 
@@ -102,7 +101,7 @@ python -m iswc.harmonized.interface train-candidate-model \
 
 ## 4) Generate Candidates
 
-Choose exactly one candidate-size option (defaults to average-per-head 500 if omitted):
+Choose exactly one candidate-size option:
 
 - `--avg-candidates-per-head`: average candidates per head.
 - `--normalized-candidates-per-triple`: normalized candidate size (total candidates / #gold test triples).

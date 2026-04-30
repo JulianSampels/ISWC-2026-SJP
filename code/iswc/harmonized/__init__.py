@@ -7,7 +7,6 @@ when they are not needed:
 - iswc.harmonized.sjp_adapter
 - iswc.harmonized.reta_adapter
 - iswc.harmonized.gfrt_adapter
-- iswc.harmonized.adapters (compatibility exports)
 - iswc.harmonized.dataset
 - iswc.harmonized.metrics
 """

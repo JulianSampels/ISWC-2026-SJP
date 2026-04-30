@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 NUM_WORKERS_DEFAULT = cpu_count() // 2
-DEFAULT_AVG_CANDIDATES_PER_HEAD = 500
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +83,12 @@ def _evaluate_metrics(stage: str, input_file: str | Path, gold_triples: str | Pa
 
 
 def _add_candidate_size_args(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_mutually_exclusive_group(required=False)
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--avg-candidates-per-head",
         type=float,
         default=None,
-        help=(
-            "Average candidate size per head (per-head cap). "
-            f"If omitted, defaults to {DEFAULT_AVG_CANDIDATES_PER_HEAD}."
-        ),
+        help="Average candidate size per head (per-head cap).",
     )
     group.add_argument(
         "--normalized-candidates-per-triple",
@@ -147,17 +143,7 @@ def _resolve_candidate_budget(
     normalized_candidates_per_triple: Optional[float],
     total_candidates: Optional[float],
     gold_file: str | Path,
-    default_avg_per_head: int = DEFAULT_AVG_CANDIDATES_PER_HEAD,
 ) -> Dict[str, Any]:
-    default_used = False
-    if (
-        avg_candidates_per_head is None
-        and normalized_candidates_per_triple is None
-        and total_candidates is None
-    ):
-        avg_candidates_per_head = float(default_avg_per_head)
-        default_used = True
-
     provided = sum(
         value is not None
         for value in (
@@ -213,7 +199,6 @@ def _resolve_candidate_budget(
         "n_heads": n_heads,
         "n_triples": n_triples,
         "gold_file": str(Path(gold_file).resolve()),
-        "default_used": default_used,
     }
 
 
@@ -228,7 +213,6 @@ def _budget_payload(budget: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_budget_num_heads": int(budget["n_heads"]),
         "candidate_budget_num_triples": int(budget["n_triples"]),
         "candidate_budget_gold_file": budget["gold_file"],
-        "candidate_budget_default_used": bool(budget["default_used"]),
     }
 
 
@@ -453,7 +437,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "prepare-dataset":
-        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
+        from iswc.harmonized.gfrt_adapter import GFRTAdapter
+        from iswc.harmonized.reta_adapter import RETAAdapter
+        from iswc.harmonized.sjp_adapter import SJPAdapter
 
         delimiter = _normalise_delimiter(args.delimiter)
         if args.adapter == "sjp":
@@ -499,7 +485,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "train-candidate-model":
-        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
+        from iswc.harmonized.gfrt_adapter import GFRTAdapter
+        from iswc.harmonized.reta_adapter import RETAAdapter
+        from iswc.harmonized.sjp_adapter import SJPAdapter
 
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
@@ -557,7 +545,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "generate-candidates":
-        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
+        from iswc.harmonized.gfrt_adapter import GFRTAdapter
+        from iswc.harmonized.reta_adapter import RETAAdapter
+        from iswc.harmonized.sjp_adapter import SJPAdapter
 
         if Path(args.output_file).suffix.lower() != ".csv":
             raise ValueError("--output-file must end with .csv for generate-candidates")
@@ -673,7 +663,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "train-ranking-model":
-        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
+        from iswc.harmonized.gfrt_adapter import GFRTAdapter
+        from iswc.harmonized.reta_adapter import RETAAdapter
+        from iswc.harmonized.sjp_adapter import SJPAdapter
 
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
@@ -757,7 +749,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     if args.command == "rank-candidates":
-        from iswc.harmonized.adapters import GFRTAdapter, RETAAdapter, SJPAdapter
+        from iswc.harmonized.gfrt_adapter import GFRTAdapter
+        from iswc.harmonized.reta_adapter import RETAAdapter
+        from iswc.harmonized.sjp_adapter import SJPAdapter
 
         if Path(args.candidate_file).suffix.lower() != ".csv":
             raise ValueError("--candidate-file must end with .csv for rank-candidates")
