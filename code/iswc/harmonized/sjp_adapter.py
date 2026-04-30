@@ -49,6 +49,32 @@ class SJPAdapter(CandidateAdapter):
             f"Could not infer path_setup from {train_path}. No *_paths.csv files were found."
         )
 
+    def _load_original_relation_ids(self, path_dataset_dir: str | Path) -> set[int]:
+        pathe_trainer, data_utils, _, _, _ = self._import_sjp_modules()
+        del pathe_trainer
+
+        train_path = Path(path_dataset_dir).resolve() / "train"
+        if not train_path.is_dir():
+            raise FileNotFoundError(f"Missing SJP split directory: {train_path}")
+
+        relation_map = data_utils.load_relation2inverse_relation_from_file(str(train_path))
+        original_relations = {int(rel_id) for rel_id in relation_map.keys()}
+        if not original_relations:
+            raise ValueError("relation2inverseRelation.json is empty; cannot filter inverse relations.")
+        return original_relations
+
+    @staticmethod
+    def _filter_predictions_to_original_relations(
+        predictions: RankedPredictions,
+        original_relations: set[int],
+    ) -> RankedPredictions:
+        filtered: RankedPredictions = {}
+        for head_id, ranked in predictions.items():
+            kept = [(r, t, s) for r, t, s in ranked if int(r) in original_relations]
+            if kept:
+                filtered[int(head_id)] = kept
+        return filtered
+
     def _import_sjp_modules(self):
         sjp_code_dir = self._resolve_sjp_code_dir()
         if str(sjp_code_dir) not in sys.path:
@@ -398,6 +424,8 @@ class SJPAdapter(CandidateAdapter):
 
         candidates_test, _ = cand_test
         predictions = self._group_candidate_tensor(candidates_test, cand_scores)
+        original_relations = self._load_original_relation_ids(path_dataset_dir)
+        predictions = self._filter_predictions_to_original_relations(predictions, original_relations)
         save_ranked_predictions(predictions, output_file)
         return predictions
 
@@ -531,6 +559,11 @@ class SJPAdapter(CandidateAdapter):
         phase = self._prepare_phase_inputs(args)
 
         provided_predictions = load_ranked_predictions(candidate_file)
+        original_relations = self._load_original_relation_ids(path_dataset_dir)
+        provided_predictions = self._filter_predictions_to_original_relations(
+            provided_predictions,
+            original_relations,
+        )
         candidate_tensor = self._predictions_to_tensor(provided_predictions)
 
         cand_train = torch.unique(phase["train_triples"], dim=0)

@@ -461,7 +461,24 @@ def export_standardized_dataset_to_sjp(
                 raise ValueError(
                     f"Expected test triples shape [N, 3] in {test_triples_path}, observed {tuple(test_tensor.shape)}"
                 )
-            _write_id_triples_csv(output_path / "gold_test.csv", test_tensor.tolist())
+            relation_map_path = output_path / "train" / "relation2inverseRelation.json"
+            if not relation_map_path.is_file():
+                raise FileNotFoundError(
+                    "SJP prepared dataset is missing relation2inverseRelation.json in train split: "
+                    f"{relation_map_path}"
+                )
+
+            with relation_map_path.open("r", encoding="utf-8") as handle:
+                relation_map = json.load(handle)
+
+            original_relations = {int(key) for key in relation_map.keys()}
+            if not original_relations:
+                raise ValueError("relation2inverseRelation.json is empty; cannot filter inverse relations.")
+
+            rel_col = test_tensor[:, 1].to(dtype=torch.long)
+            mask = torch.isin(rel_col, torch.as_tensor(sorted(original_relations), dtype=torch.long))
+            filtered_test_tensor = test_tensor[mask]
+            _write_id_triples_csv(output_path / "gold_test.csv", filtered_test_tensor.tolist())
         else:
             raise FileNotFoundError(
                 f"SJP prepared dataset is missing expected test triples file: {test_triples_path}"
