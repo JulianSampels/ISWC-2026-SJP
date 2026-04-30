@@ -504,7 +504,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter sjp")
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -571,7 +570,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter sjp")
 
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -608,7 +606,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter gfrt")
 
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -647,7 +644,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
         _validate_reta_top_nfilters(int(args.top_nfilters), "generate-candidates")
 
-        _ensure_candidate_size_selected(args)
         budget = _resolve_candidate_budget(
             avg_candidates_per_head=args.avg_candidates_per_head,
             normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -689,7 +685,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter sjp")
 
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -778,7 +773,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter sjp")
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -813,7 +807,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "gfrt":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter gfrt")
-            _ensure_candidate_size_selected(args)
             budget = _resolve_candidate_budget(
                 avg_candidates_per_head=args.avg_candidates_per_head,
                 normalized_candidates_per_triple=args.normalized_candidates_per_triple,
@@ -850,7 +843,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
         _validate_reta_top_nfilters(int(args.top_nfilters), "rank-candidates")
 
-        _ensure_candidate_size_selected(args)
         budget = _resolve_candidate_budget(
             avg_candidates_per_head=args.avg_candidates_per_head,
             normalized_candidates_per_triple=args.normalized_candidates_per_triple,
