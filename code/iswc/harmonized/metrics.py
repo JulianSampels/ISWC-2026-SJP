@@ -219,7 +219,7 @@ def evaluate_candidate_metrics(
         _metric_row("total candidate size", total_candidate_size_f),
         _metric_row("average candidate size (head)", total_candidate_size_f / float(n_heads_safe)),
         _metric_row(
-            "relative candidate size (triple)",
+            "normalised candidate size (triple)",
             total_candidate_size_f / n_triples_f if n_triples_f > 0.0 else 0.0,
         ),
         _metric_row("coverage_macro", coverage_macro_sum / float(n_heads_safe)),

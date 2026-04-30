@@ -17,7 +17,6 @@ from iswc.gfrt import GFRTFilter, GFRTModel, GFRTTrainer, build_gfrt_pipeline
 from .base_adapter import (
     CandidateAdapter,
     RankedPredictions,
-    apply_candidate_budget,
     load_ranked_predictions,
     save_ranked_predictions,
 )
@@ -452,7 +451,6 @@ class GFRTAdapter(CandidateAdapter):
                 for _, relation_id, tail_id, score in rows
             ]
 
-        predictions = apply_candidate_budget(predictions, int(candidate_budget))
         save_ranked_predictions(predictions, output_file)
         return predictions
 
@@ -569,6 +567,5 @@ class GFRTAdapter(CandidateAdapter):
                 ranked_rows.append((int(relation_id), int(tail_id), float(scores[int(idx)].item())))
             ranked_predictions[int(head_id)] = ranked_rows
 
-        ranked_predictions = apply_candidate_budget(ranked_predictions, int(candidate_budget))
         save_ranked_predictions(ranked_predictions, output_file)
         return ranked_predictions

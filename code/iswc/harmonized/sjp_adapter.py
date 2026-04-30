@@ -14,7 +14,6 @@ import torch
 from .base_adapter import (
     CandidateAdapter,
     RankedPredictions,
-    apply_candidate_budget,
     load_ranked_predictions,
     save_ranked_predictions,
 )
@@ -399,7 +398,6 @@ class SJPAdapter(CandidateAdapter):
 
         candidates_test, _ = cand_test
         predictions = self._group_candidate_tensor(candidates_test, cand_scores)
-        predictions = apply_candidate_budget(predictions, int(candidate_budget))
         save_ranked_predictions(predictions, output_file)
         return predictions
 
@@ -558,6 +556,5 @@ class SJPAdapter(CandidateAdapter):
             candidate_scores_test,
         )
 
-        ranked_predictions = apply_candidate_budget(provided_predictions, int(candidate_budget))
-        save_ranked_predictions(ranked_predictions, output_file)
-        return ranked_predictions
+        save_ranked_predictions(provided_predictions, output_file)
+        return provided_predictions

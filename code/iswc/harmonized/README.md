@@ -102,6 +102,12 @@ python -m iswc.harmonized.interface train-candidate-model \
 
 ## 4) Generate Candidates
 
+Choose exactly one candidate-size option (defaults to average-per-head 500 if omitted):
+
+- `--avg-candidates-per-head`: average candidates per head.
+- `--normalized-candidates-per-triple`: normalized candidate size (total candidates / #gold test triples).
+- `--total-candidates`: total candidates across all heads.
+
 SJP:
 
 ```bash
@@ -109,7 +115,7 @@ python -m iswc.harmonized.interface generate-candidates \
   --adapter sjp \
   --path-dataset-dir ./iswc_data/sjp/fb15k237 \
   --candidate-model-path ./logs/harmonized/sjp_fb15k237/checkpoints/<tuple.ckpt> \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --output-file ./results/sjp_candidates.csv
 ```
 
@@ -120,7 +126,7 @@ python -m iswc.harmonized.interface generate-candidates \
   --adapter reta \
   --reta-code-dir ./RETA_code \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --output-file ./results/reta_candidates.csv
 ```
 
@@ -131,7 +137,7 @@ python -m iswc.harmonized.interface generate-candidates \
   --adapter gfrt \
   --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
   --candidate-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --top-m-relations 20 \
   --top-n-tails 100 \
   --output-file ./results/gfrt_candidates.csv
@@ -172,6 +178,8 @@ python -m iswc.harmonized.interface train-ranking-model \
 
 ## 6) Rank Candidates
 
+Use the same candidate-size options as generate-candidates.
+
 SJP:
 
 ```bash
@@ -180,7 +188,7 @@ python -m iswc.harmonized.interface rank-candidates \
   --path-dataset-dir ./iswc_data/sjp/fb15k237 \
   --candidate-file ./results/sjp_candidates.csv \
   --ranking-model-path ./logs/harmonized/sjp_fb15k237/checkpoints/<triple.ckpt> \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --output-file ./results/sjp_ranked.csv
 ```
 
@@ -193,7 +201,7 @@ python -m iswc.harmonized.interface rank-candidates \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
   --candidate-file ./results/reta_candidates.csv \
   --ranking-model-path ./results/reta_models/<model_file> \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --output-file ./results/reta_ranked.csv
 ```
 
@@ -205,7 +213,7 @@ python -m iswc.harmonized.interface rank-candidates \
   --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
   --candidate-file ./results/gfrt_candidates.csv \
   --ranking-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt \
-  --candidate-budget 500 \
+  --avg-candidates-per-head 500 \
   --output-file ./results/gfrt_ranked.csv
 ```
 
