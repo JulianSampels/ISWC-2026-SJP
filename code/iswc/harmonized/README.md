@@ -137,8 +137,6 @@ python -m iswc.harmonized.interface generate-candidates \
   --path-dataset-dir ./iswc_data/gfrt/fb15k237 \
   --candidate-model-path ./logs/harmonized/gfrt_fb15k237/gfrt_model.pt \
   --avg-candidates-per-head 500 \
-  --top-m-relations 20 \
-  --top-n-tails 100 \
   --output-file ./results/gfrt_candidates.csv
 ```
 
