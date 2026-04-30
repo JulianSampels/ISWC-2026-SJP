@@ -101,7 +101,7 @@ python -m iswc.harmonized.interface train-candidate-model \
 
 ## 4) Generate Candidates
 
-Choose exactly one candidate-size option:
+Choose exactly one candidate-size option for candidate generation and ranking:
 
 - `--avg-candidates-per-head`: average candidates per head.
 - `--normalized-candidates-per-triple`: normalized candidate size (total candidates / #gold test triples).
