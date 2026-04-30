@@ -164,11 +164,11 @@ def _resolve_candidate_budget(
             total_candidates,
         )
     )
-    if provided != 1:
-        raise ValueError(
-            "Exactly one of --avg-candidates-per-head, --normalized-candidates-per-triple, "
-            "or --total-candidates must be provided."
-        )
+    # if provided != 1:
+    #     raise ValueError(
+    #         "Exactly one of --avg-candidates-per-head, --normalized-candidates-per-triple, "
+    #         "or --total-candidates must be provided."
+    #     )
 
     stats = _load_gold_stats(gold_file)
     n_heads = int(stats["n_heads"])
