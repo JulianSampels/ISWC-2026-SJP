@@ -104,18 +104,6 @@ def _add_candidate_size_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _ensure_candidate_size_selected(args: argparse.Namespace) -> None:
-    if (
-        args.avg_candidates_per_head is None
-        and args.normalized_candidates_per_triple is None
-        and args.total_candidates is None
-    ):
-        raise ValueError(
-            "One of --avg-candidates-per-head, --normalized-candidates-per-triple, "
-            "or --total-candidates is required for this command."
-        )
-
-
 def _resolve_gold_test_file(dataset_dir: str | Path) -> Path:
     gold_path = Path(dataset_dir).resolve() / "gold_test.csv"
     if not gold_path.is_file():
@@ -151,24 +139,16 @@ def _load_gold_stats(gold_file: str | Path) -> Dict[str, int]:
 
 
 def _resolve_candidate_budget(
-    avg_candidates_per_head: Optional[float],
-    normalized_candidates_per_triple: Optional[float],
-    total_candidates: Optional[float],
+    args: argparse.Namespace,
     gold_file: str | Path,
 ) -> Dict[str, Any]:
-    provided = sum(
-        value is not None
-        for value in (
-            avg_candidates_per_head,
-            normalized_candidates_per_triple,
-            total_candidates,
+    if (args.avg_candidates_per_head is None and 
+        args.normalized_candidates_per_triple is None and 
+        args.total_candidates is None):
+        raise ValueError(
+            "A candidate budget is required for this step/adapter. Please provide one of: "
+            "--avg-candidates-per-head, --normalized-candidates-per-triple, or --total-candidates."
         )
-    )
-    # if provided != 1:
-    #     raise ValueError(
-    #         "Exactly one of --avg-candidates-per-head, --normalized-candidates-per-triple, "
-    #         "or --total-candidates must be provided."
-    #     )
 
     stats = _load_gold_stats(gold_file)
     n_heads = int(stats["n_heads"])
@@ -176,24 +156,22 @@ def _resolve_candidate_budget(
     if n_heads <= 0 or n_triples <= 0:
         raise ValueError("gold_test.csv must contain at least one head and triple.")
 
-    if avg_candidates_per_head is not None:
-        avg = float(avg_candidates_per_head)
+    if args.avg_candidates_per_head is not None:
+        avg = float(args.avg_candidates_per_head)
         if avg <= 0:
             raise ValueError("avg-candidates-per-head must be positive.")
         requested_total = int(math.ceil(avg * n_heads))
         per_head = int(math.ceil(avg))
         mode = "average_per_head"
-    elif normalized_candidates_per_triple is not None:
-        normalized = float(normalized_candidates_per_triple)
+    elif args.normalized_candidates_per_triple is not None:
+        normalized = float(args.normalized_candidates_per_triple)
         if normalized <= 0:
             raise ValueError("normalized-candidates-per-triple must be positive.")
         requested_total = int(math.ceil(normalized * n_triples))
         per_head = int(math.ceil(requested_total / float(n_heads)))
         mode = "normalized_per_triple"
     else:
-        if total_candidates is None:
-            raise ValueError("total-candidates is required when selecting total mode.")
-        total = float(total_candidates)
+        total = float(args.total_candidates)
         if total <= 0:
             raise ValueError("total-candidates must be positive.")
         requested_total = int(math.ceil(total))
@@ -504,12 +482,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter sjp")
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
             adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
             summary = adapter.train_candidate_model(
                 path_dataset_dir=args.path_dataset_dir,
@@ -521,9 +493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 max_epochs=args.max_epochs,
                 tuple_checkpoint=args.tuple_checkpoint,
                 skip_phase1=args.skip_phase1,
-                candidate_budget=budget["per_head"],
             )
-            summary.update(_budget_payload(budget))
         elif args.adapter == "reta":
             reta_code_dir = Path(args.reta_code_dir).resolve() if args.reta_code_dir is not None else _resolve_default_reta_code_dir()
             if args.reta_data_dir is None:
@@ -570,12 +540,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter sjp")
 
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
+            budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.path_dataset_dir))
             adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
             predictions = adapter.generate_candidates(
                 output_file=args.output_file,
@@ -606,12 +571,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter gfrt")
 
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
+            budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.path_dataset_dir))
             adapter = GFRTAdapter()
             predictions = adapter.generate_candidates(
                 output_file=args.output_file,
@@ -644,12 +604,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
         _validate_reta_top_nfilters(int(args.top_nfilters), "generate-candidates")
 
-        budget = _resolve_candidate_budget(
-            avg_candidates_per_head=args.avg_candidates_per_head,
-            normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-            total_candidates=args.total_candidates,
-            gold_file=_resolve_gold_test_file(args.reta_data_dir),
-        )
+        budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.reta_data_dir))
         adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
         predictions = adapter.generate_candidates(
             output_file=args.output_file,
@@ -685,12 +640,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if args.candidate_model_path is None:
                 raise ValueError("--candidate-model-path is required when --adapter sjp")
 
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
+            budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.path_dataset_dir))
             adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
             summary = adapter.train_ranking_model(
                 path_dataset_dir=args.path_dataset_dir,
@@ -773,12 +723,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "sjp":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter sjp")
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
+            budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.path_dataset_dir))
             adapter = SJPAdapter(sjp_code_dir=args.sjp_code_dir)
             predictions = adapter.rank_candidates(
                 candidate_file=args.candidate_file,
@@ -807,12 +752,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.adapter == "gfrt":
             if args.path_dataset_dir is None:
                 raise ValueError("--path-dataset-dir is required when --adapter gfrt")
-            budget = _resolve_candidate_budget(
-                avg_candidates_per_head=args.avg_candidates_per_head,
-                normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-                total_candidates=args.total_candidates,
-                gold_file=_resolve_gold_test_file(args.path_dataset_dir),
-            )
+            budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.path_dataset_dir))
             adapter = GFRTAdapter()
             predictions = adapter.rank_candidates(
                 candidate_file=args.candidate_file,
@@ -843,12 +783,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             raise ValueError("--reta-data-dir is required when --adapter reta")
         _validate_reta_top_nfilters(int(args.top_nfilters), "rank-candidates")
 
-        budget = _resolve_candidate_budget(
-            avg_candidates_per_head=args.avg_candidates_per_head,
-            normalized_candidates_per_triple=args.normalized_candidates_per_triple,
-            total_candidates=args.total_candidates,
-            gold_file=_resolve_gold_test_file(args.reta_data_dir),
-        )
+        budget = _resolve_candidate_budget(args, _resolve_gold_test_file(args.reta_data_dir))
         adapter = RETAAdapter(reta_code_dir=reta_code_dir, reta_data_dir=args.reta_data_dir)
         predictions = adapter.rank_candidates(
             candidate_file=args.candidate_file,

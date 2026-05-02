@@ -312,7 +312,6 @@ class SJPAdapter(CandidateAdapter):
         max_epochs: int = 100,
         tuple_checkpoint: Optional[str | Path] = None,
         skip_phase1: bool = False,
-        candidate_budget: int = 500,
     ) -> Dict[str, Any]:
         """Train SJP phase-1 model and return saved tuple checkpoint path."""
         args = self._build_split_join_args(
@@ -321,7 +320,7 @@ class SJPAdapter(CandidateAdapter):
             cmd=cmd,
             log_dir=log_dir,
             expname=expname,
-            candidate_budget=candidate_budget,
+            candidate_budget=500, # Not actually used in Phase 1
             num_workers=num_workers,
             max_epochs=max_epochs,
             tuple_checkpoint=tuple_checkpoint,
