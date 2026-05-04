@@ -183,6 +183,8 @@ class SJPAdapter(CandidateAdapter):
             ent_aggregation="transformer",
             num_workers=max(int(num_workers), 0),
             batch_size=16,
+            d_model=64,
+            max_seqlen=100,
             val_batch_size=16,
             device="cuda" if torch.cuda.is_available() else "cpu",
             num_devices=1,
