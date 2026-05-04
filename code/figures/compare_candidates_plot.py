@@ -54,9 +54,9 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     # Base x-axis will be total_size
     # Coverage (left axis)
     ax_cov.plot(sjp_df["total_size"], sjp_df["coverage_macro"],
-                marker="o", markersize=4, linestyle="-", label="SJP Coverage", color="#2FC700")
+                marker="o", markersize=4, linestyle="-", label="SJP Coverage", color='seagreen')
     ax_cov.plot(reta_df["total_size"], reta_df["coverage_macro"],
-                marker="s", markersize=4, linestyle="--", label="RETA Coverage", color="#2FC700")
+                marker="s", markersize=4, linestyle="--", label="RETA Coverage", color='seagreen')
     ax_cov.set_xlabel("Total Candidate Size")
     ax_cov.set_ylabel("Coverage (Macro)")
     ax_cov.set_ylim(0, 1)
@@ -66,9 +66,9 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     # Density (right axis)
     ax_den = ax_cov.twinx()
     ax_den.plot(sjp_df["total_size"], sjp_df["density_macro"],
-                marker="x", markersize=4, linestyle=":", label="SJP Density", color="#56B4E9")
+                marker="x", markersize=4, linestyle=":", label="SJP Density", color='dodgerblue')
     ax_den.plot(reta_df["total_size"], reta_df["density_macro"],
-                marker="x", markersize=4, linestyle=":", label="RETA Density", color="#56B4E9")
+                marker="x", markersize=4, linestyle=":", label="RETA Density", color='dodgerblue')
     ax_den.set_ylabel("Density (Macro)")
 
     # Bottom axes adjustments
