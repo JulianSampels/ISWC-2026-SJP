@@ -49,7 +49,7 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
 
     # Setup figure
     WIDTH = 418.25555 / 72.27
-    fig, ax_cov = plt.subplots(figsize=(WIDTH, WIDTH * 0.65))
+    fig, ax_cov = plt.subplots(figsize=(WIDTH, WIDTH * 1.0))  # Made plot higher
 
     # Base x-axis will be total_size
     # Coverage (left axis)
@@ -60,6 +60,7 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     ax_cov.set_xlabel("Total Candidate Size")
     ax_cov.set_ylabel("Coverage (Macro)")
     ax_cov.set_ylim(0, 1)
+    ax_cov.set_xlim(left=0)  # Prevent negative x-axis
     ax_cov.grid(True, alpha=0.3)
 
     # Density (right axis)
