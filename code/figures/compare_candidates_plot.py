@@ -58,7 +58,8 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     ax_cov.plot(reta_df["total_size"], reta_df["coverage_macro"],
                 marker="s", markersize=4, linestyle="--", label="RETA Coverage", color='seagreen')
     ax_cov.set_xlabel("Total Candidate Size")
-    ax_cov.set_ylabel("Coverage (Macro)")
+    ax_cov.set_ylabel("Coverage (Macro)", color='seagreen')
+    ax_cov.tick_params(axis='y', labelcolor='seagreen')
     ax_cov.set_ylim(0, 1)
     ax_cov.set_xlim(left=0)  # Prevent negative x-axis
     ax_cov.grid(True, alpha=0.3)
@@ -66,10 +67,11 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     # Density (right axis)
     ax_den = ax_cov.twinx()
     ax_den.plot(sjp_df["total_size"], sjp_df["density_macro"],
-                marker="x", markersize=4, linestyle=":", label="SJP Density", color='dodgerblue')
+                marker="^", markersize=4, linestyle="-", label="SJP Density", color='dodgerblue')
     ax_den.plot(reta_df["total_size"], reta_df["density_macro"],
-                marker="x", markersize=4, linestyle=":", label="RETA Density", color='dodgerblue')
-    ax_den.set_ylabel("Density (Macro)")
+                marker="v", markersize=4, linestyle="--", label="RETA Density", color='dodgerblue')
+    ax_den.set_ylabel("Density (Macro)", color='dodgerblue')
+    ax_den.tick_params(axis='y', labelcolor='dodgerblue')
 
     # Bottom axes adjustments
     
@@ -106,7 +108,7 @@ def plot_coverage_density(sjp_df, reta_df, outfile="coverage_density.pdf"):
     # Combine legends into one box
     lines_cov, labels_cov = ax_cov.get_legend_handles_labels()
     lines_den, labels_den = ax_den.get_legend_handles_labels()
-    ax_cov.legend(lines_cov + lines_den, labels_cov + labels_den, loc="upper right")
+    ax_cov.legend(lines_cov + lines_den, labels_cov + labels_den, loc='center right')
 
     plt.tight_layout()
     plt.savefig(outfile, bbox_inches="tight", pad_inches=0.01)
