@@ -736,7 +736,7 @@ def rank_reta_candidates(
 
     reta = runtime["reta"]
     reta_data_path = runtime["reta_data_path"]
-    model = torch.load(Path(model_path).resolve(), map_location=device)
+    model = torch.load(Path(model_path).resolve(), map_location=device, weights_only=False)
     model.eval()
     model.to(device)
 
