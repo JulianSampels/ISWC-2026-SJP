@@ -580,7 +580,7 @@ class SJPAdapter(CandidateAdapter):
         test_labels = phase["triple_lib"].build_labels_for_triples(cand_test, phase["test_triples"])
         candidate_scores_test = torch.zeros(cand_test.size(0), dtype=torch.float32)
 
-        phase["pathe_trainer"].run_phase_3_triple_classification(
+        test_dict, predicted_scores, predicted_triples = phase["pathe_trainer"].run_phase_3_triple_classification(
             args,
             (cand_train, train_labels),
             (cand_val, val_labels),
@@ -594,5 +594,24 @@ class SJPAdapter(CandidateAdapter):
             candidate_scores_test,
         )
 
-        save_ranked_predictions(provided_predictions, output_file)
-        return provided_predictions
+        # Map back scores via dictionary
+        score_dict = {}
+        for score, triple in zip(predicted_scores.tolist(), predicted_triples.tolist()):
+            h, r, t = tuple(triple)
+            score_dict[(h, r, t)] = score
+
+        scored_predictions = {}
+        for head, rows in provided_predictions.items():
+            scored_rows = []
+            seen = set()
+            for r, t, _ in rows:
+                if (r, t) not in seen:
+                    seen.add((r, t))
+                    score = score_dict.get((head, r, t), -100.0)
+                    scored_rows.append((r, t, float(score)))
+            # Reorder rows by descending score
+            scored_rows.sort(key=lambda x: x[2], reverse=True)
+            scored_predictions[head] = scored_rows
+
+        save_ranked_predictions(scored_predictions, output_file)
+        return scored_predictions

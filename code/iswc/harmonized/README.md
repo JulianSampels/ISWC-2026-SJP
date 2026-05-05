@@ -216,11 +216,11 @@ python -m iswc.harmonized.interface rank-candidates \
 
 RETA ranking requires CUDA because RETA forward uses `.cuda(...)` in submodule model code.
 
-## 7) Evaluate and Compare
+## 7A) Evaluate Candidates
 
-Evaluate one output file (use the matching adapter gold file):
+After generating candidates in step 4, evaluate individual candidate files to measure recall/coverage:
 
-SJP candidate metrics:
+SJP:
 
 ```bash
 python -m iswc.harmonized.interface evaluate \
@@ -231,7 +231,7 @@ python -m iswc.harmonized.interface evaluate \
   --output-csv ./results/sjp_candidates_metrics.csv
 ```
 
-RETA candidate metrics:
+RETA:
 
 ```bash
 python -m iswc.harmonized.interface evaluate \
@@ -242,7 +242,7 @@ python -m iswc.harmonized.interface evaluate \
   --output-csv ./results/reta_candidates_metrics.csv
 ```
 
-GFRT candidate metrics:
+GFRT:
 
 ```bash
 python -m iswc.harmonized.interface evaluate \
@@ -253,7 +253,46 @@ python -m iswc.harmonized.interface evaluate \
   --output-csv ./results/gfrt_candidates_metrics.csv
 ```
 
-Compare multiple outputs:
+## 7B) Evaluate Ranking
+
+After ranking candidates in step 6, evaluate individual ranking files or compare across methods.
+
+**Evaluate a single ranking file:**
+
+SJP:
+
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage ranking \
+  --input-file ./results/sjp_ranked.csv \
+  --gold-triples ./iswc_data/sjp/fb15k237/gold_test.csv \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/sjp_ranking_metrics.csv
+```
+
+RETA:
+
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage ranking \
+  --input-file ./results/reta_ranked.csv \
+  --gold-triples ./iswc_data/reta/fb15k237/gold_test.csv \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/reta_ranking_metrics.csv
+```
+
+GFRT:
+
+```bash
+python -m iswc.harmonized.interface evaluate \
+  --stage ranking \
+  --input-file ./results/gfrt_ranked.csv \
+  --gold-triples ./iswc_data/gfrt/fb15k237/gold_test.csv \
+  --k-values 1,3,5,10 \
+  --output-csv ./results/gfrt_ranking_metrics.csv
+```
+
+**Compare multiple ranking methods:**
 
 ```bash
 python -m iswc.harmonized.interface compare \
@@ -262,6 +301,7 @@ python -m iswc.harmonized.interface compare \
   --k-values 1,3,5,10 \
   --method SJP ./results/sjp_ranked.csv \
   --method RETA ./results/reta_ranked.csv \
+  --method GFRT ./results/gfrt_ranked.csv \
   --output-json ./results/ranking_compare.json
 ```
 
