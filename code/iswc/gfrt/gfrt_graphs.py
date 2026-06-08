@@ -29,6 +29,7 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 import scipy.sparse as sp
 import torch
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def _build_entity_entity_edges(
 
     logger.info(f"Computing top-{top_k} asymmetric overlaps in chunks...")
     
-    for start_idx in range(0, num_entities, chunk_size):
+    for start_idx in tqdm(range(0, num_entities, chunk_size), desc="Entity-entity edges", leave=False):
         end_idx = min(start_idx + chunk_size, num_entities)
         A_chunk = A[start_idx:end_idx]
         
