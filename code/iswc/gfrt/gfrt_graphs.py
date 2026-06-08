@@ -214,30 +214,6 @@ def build_tail_relation_graph(
     )
     return graph
 
-
-# ---------------------------------------------------------------------------
-# Shared similarity utilities
-# ---------------------------------------------------------------------------
-
-def _sim_entity_head(e1_rels: Set[int], e2_rels: Set[int]) -> float:
-    """
-    Head-entity similarity: fraction of e1's relations that e2 also has outgoing.
-    MVF paper Eq. (1):
-        sim_H(e1)(e2) = |{r ∈ R_H : (e1,r)∈G_H} ∩ {r ∈ R_H : (e2,r)∈G_H}|
-                       / |{r ∈ R_H : (e1,r) ∈ G_H}|
-    """
-    if not e1_rels:
-        return 0.0
-    return len(e1_rels & e2_rels) / len(e1_rels)
-
-
-def _sim_entity_tail(e1_rels: Set[int], e2_rels: Set[int]) -> float:
-    """Tail-entity similarity (symmetric definition from the tail-rel graph)."""
-    if not e1_rels:
-        return 0.0
-    return len(e1_rels & e2_rels) / len(e1_rels)
-
-
 def _build_entity_entity_edges(
     entity_to_relations: Dict[int, Set[int]],
     top_k: int,
@@ -275,7 +251,7 @@ def _build_entity_entity_edges(
     entity_sizes = np.array(A.sum(axis=1)).flatten()
 
     src_list, dst_list, w_list = [], [], []
-    chunk_size = 10000  # Safe for typical systems; scales processing smoothly
+    chunk_size = 500  # Adjust based on available memory and dataset size
 
     logger.info(f"Computing top-{top_k} asymmetric overlaps in chunks...")
     
@@ -286,7 +262,7 @@ def _build_entity_entity_edges(
         # Dot product yields raw intersection counts at bare-metal speed
         intersections = A_chunk.dot(A.T).tocsr()
 
-        for local_idx in tqdm(range(intersections.shape[0]), desc="Processing chunks", leave=False):
+        for local_idx in range(intersections.shape[0]):
             global_src = start_idx + local_idx
             
             row_start = intersections.indptr[local_idx]
@@ -326,9 +302,6 @@ def _build_entity_entity_edges(
                 src_list.append(global_src)
                 dst_list.append(int(indices[idx]))
                 w_list.append(float(scores[idx]))
-
-        if start_idx % (chunk_size * 5) == 0:
-            logger.info(f"Progress: Processed up to entity index {end_idx}/{num_entities}")
 
     return src_list, dst_list, w_list
 
