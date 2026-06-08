@@ -286,7 +286,7 @@ def _build_entity_entity_edges(
         # Dot product yields raw intersection counts at bare-metal speed
         intersections = A_chunk.dot(A.T).tocsr()
 
-        for local_idx in range(intersections.shape[0]):
+        for local_idx in tqdm(range(intersections.shape[0]), desc="Processing chunks", leave=False):
             global_src = start_idx + local_idx
             
             row_start = intersections.indptr[local_idx]
