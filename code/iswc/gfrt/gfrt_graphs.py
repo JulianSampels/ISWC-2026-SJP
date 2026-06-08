@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,6 @@ def build_head_relation_graph(
     ee_src, ee_dst, ee_w = _build_entity_entity_edges(
         entity_to_relations=h_to_rels,
         top_k=top_k1,
-        sim_fn=_sim_entity_head,
     )
     graph.ee_src    = torch.tensor(ee_src, dtype=torch.long)
     graph.ee_dst    = torch.tensor(ee_dst, dtype=torch.long)
@@ -182,7 +182,6 @@ def build_tail_relation_graph(
     ee_src, ee_dst, ee_w = _build_entity_entity_edges(
         entity_to_relations=t_to_rels,
         top_k=top_k1,
-        sim_fn=_sim_entity_tail,
     )
     graph.ee_src    = torch.tensor(ee_src, dtype=torch.long)
     graph.ee_dst    = torch.tensor(ee_dst, dtype=torch.long)
@@ -241,30 +240,94 @@ def _sim_entity_tail(e1_rels: Set[int], e2_rels: Set[int]) -> float:
 def _build_entity_entity_edges(
     entity_to_relations: Dict[int, Set[int]],
     top_k: int,
-    sim_fn,
 ) -> Tuple[List[int], List[int], List[float]]:
     """
-    Build entity-entity edges by selecting top-k similar entities per entity.
-    Returns (src_ids, dst_ids, weights).
+    Optimised asymmetric entity-entity edge builder.
+    Calculates: |e1_rels & e2_rels| / |e1_rels| using sparse matrix multiplication.
     """
-    entities = list(entity_to_relations.keys())
-    src_list, dst_list, w_list = [], [], []
+    logger.info("Parsing dictionary mappings into sparse matrix layout...")
+    entity_ids = list(entity_to_relations.keys())
+    if not entity_ids:
+        return [], [], []
 
-    for e1 in entities:
-        rels1 = entity_to_relations[e1]
-        sims: List[Tuple[float, int]] = []
-        for e2 in entities:
-            if e1 == e2:
+    num_entities = max(entity_ids) + 1
+    
+    max_rel = 0
+    for rels in entity_to_relations.values():
+        if rels:
+            max_rel = max(max_rel, max(rels))
+    num_relations = max_rel + 1
+
+    # Build binary CSR Matrix representing the entity-relation graph
+    rows, cols = [], []
+    for e, rels in entity_to_relations.items():
+        for r in rels:
+            rows.append(e)
+            cols.append(r)
+
+    A = sp.csr_matrix(
+        (np.ones(len(rows), dtype=np.float32), (rows, cols)),
+        shape=(num_entities, num_relations)
+    )
+
+    # Precompute |e1_rels| for the denominator (row sums)
+    entity_sizes = np.array(A.sum(axis=1)).flatten()
+
+    src_list, dst_list, w_list = [], [], []
+    chunk_size = 10000  # Safe for typical systems; scales processing smoothly
+
+    logger.info(f"Computing top-{top_k} asymmetric overlaps in chunks...")
+    
+    for start_idx in range(0, num_entities, chunk_size):
+        end_idx = min(start_idx + chunk_size, num_entities)
+        A_chunk = A[start_idx:end_idx]
+        
+        # Dot product yields raw intersection counts at bare-metal speed
+        intersections = A_chunk.dot(A.T).tocsr()
+
+        for local_idx in range(intersections.shape[0]):
+            global_src = start_idx + local_idx
+            
+            row_start = intersections.indptr[local_idx]
+            row_end = intersections.indptr[local_idx + 1]
+            
+            indices = intersections.indices[row_start:row_end]
+            data = intersections.data[row_start:row_end]
+
+            # Exclude self-loops (e1 == e2)
+            mask = indices != global_src
+            indices = indices[mask]
+            data = data[mask]
+
+            if len(data) == 0:
                 continue
-            s = sim_fn(rels1, entity_to_relations[e2])
-            if s > 0:
-                sims.append((s, e2))
-        # Keep top-k
-        sims.sort(key=lambda x: -x[0])
-        for sim, e2 in sims[:top_k]:
-            src_list.append(e1)
-            dst_list.append(e2)
-            w_list.append(sim)
+
+            # MVF Paper Eq. (1): intersection / |e1_rels|
+            scores = data / entity_sizes[global_src]
+
+            # Keep positive similarities
+            valid_mask = scores > 0
+            indices = indices[valid_mask]
+            scores = scores[valid_mask]
+
+            if len(scores) == 0:
+                continue
+
+            # Quick-partition the top-k items
+            if len(scores) > top_k:
+                top_k_idx = np.argpartition(scores, -top_k)[-top_k:]
+                indices = indices[top_k_idx]
+                scores = scores[top_k_idx]
+
+            # Sort the narrow top-k subset descending
+            sort_order = np.argsort(-scores)
+            for idx in sort_order:
+                src_list.append(global_src)
+                dst_list.append(int(indices[idx]))
+                w_list.append(float(scores[idx]))
+
+        if start_idx % (chunk_size * 5) == 0:
+            logger.info(f"Progress: Processed up to entity index {end_idx}/{num_entities}")
 
     return src_list, dst_list, w_list
 
