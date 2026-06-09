@@ -217,11 +217,9 @@ def build_tail_relation_graph(
 def _build_entity_entity_edges(
     entity_to_relations: Dict[int, Set[int]],
     top_k: int,
+    chunk_size: int = 1000,
 ) -> Tuple[List[int], List[int], List[float]]:
-    """
-    Optimised asymmetric entity-entity edge builder.
-    Calculates: |e1_rels & e2_rels| / |e1_rels| using sparse matrix multiplication.
-    """
+    
     logger.info("Parsing dictionary mappings into sparse matrix layout...")
     entity_ids = list(entity_to_relations.keys())
     if not entity_ids:
@@ -235,7 +233,6 @@ def _build_entity_entity_edges(
             max_rel = max(max_rel, max(rels))
     num_relations = max_rel + 1
 
-    # Build binary CSR Matrix representing the entity-relation graph
     rows, cols = [], []
     for e, rels in entity_to_relations.items():
         for r in rels:
@@ -247,61 +244,49 @@ def _build_entity_entity_edges(
         shape=(num_entities, num_relations)
     )
 
-    # Precompute |e1_rels| for the denominator (row sums)
-    entity_sizes = np.array(A.sum(axis=1)).flatten()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Moving matrix and metadata to device: {device}...")
+    
+    A_torch = torch.from_numpy(A.toarray()).to(device)
+    entity_sizes = A_torch.sum(dim=1, keepdim=True)
+    A_T = A_torch.T
 
     src_list, dst_list, w_list = [], [], []
-    chunk_size = 500  # Adjust based on available memory and dataset size
 
-    logger.info(f"Computing top-{top_k} asymmetric overlaps in chunks...")
+    logger.info(f"Computing top-{top_k} asymmetric overlaps...")
     
-    for start_idx in tqdm(range(0, num_entities, chunk_size), desc="Entity-entity edges", leave=False):
+    for start_idx in tqdm(range(0, num_entities, chunk_size), desc="Entity-entity edges"):
         end_idx = min(start_idx + chunk_size, num_entities)
-        A_chunk = A[start_idx:end_idx]
+        current_chunk_size = end_idx - start_idx
         
-        # Dot product yields raw intersection counts at bare-metal speed
-        intersections = A_chunk.dot(A.T).tocsr()
-
-        for local_idx in range(intersections.shape[0]):
-            global_src = start_idx + local_idx
-            
-            row_start = intersections.indptr[local_idx]
-            row_end = intersections.indptr[local_idx + 1]
-            
-            indices = intersections.indices[row_start:row_end]
-            data = intersections.data[row_start:row_end]
-
-            # Exclude self-loops (e1 == e2)
-            mask = indices != global_src
-            indices = indices[mask]
-            data = data[mask]
-
-            if len(data) == 0:
-                continue
-
-            # MVF Paper Eq. (1): intersection / |e1_rels|
-            scores = data / entity_sizes[global_src]
-
-            # Keep positive similarities
-            valid_mask = scores > 0
-            indices = indices[valid_mask]
-            scores = scores[valid_mask]
-
-            if len(scores) == 0:
-                continue
-
-            # Quick-partition the top-k items
-            if len(scores) > top_k:
-                top_k_idx = np.argpartition(scores, -top_k)[-top_k:]
-                indices = indices[top_k_idx]
-                scores = scores[top_k_idx]
-
-            # Sort the narrow top-k subset descending
-            sort_order = np.argsort(-scores)
-            for idx in sort_order:
-                src_list.append(global_src)
-                dst_list.append(int(indices[idx]))
-                w_list.append(float(scores[idx]))
+        intersections = torch.mm(A_torch[start_idx:end_idx], A_T)
+        
+        # Safety guard: Prevent division by zero for entities with no relations
+        chunk_sizes = entity_sizes[start_idx:end_idx]
+        scores = torch.where(chunk_sizes > 0, intersections / chunk_sizes, 0.0)
+        
+        # Exclude self-loops
+        global_rows = torch.arange(start_idx, end_idx, device=device)
+        scores[torch.arange(current_chunk_size, device=device), global_rows] = 0.0
+        scores[scores <= 0] = 0.0
+        
+        actual_k = min(top_k, num_entities)
+        topk_values, topk_indices = torch.topk(scores, k=actual_k, dim=1, largest=True)
+        
+        # Vectorised generation of source indices
+        src_indices = torch.arange(start_idx, end_idx, device=device).unsqueeze(1).expand(-1, actual_k)
+        
+        # Filter out trailing zeros (where a row had fewer than top_k matches)
+        valid_mask = topk_values > 0
+        
+        src_chunk = src_indices[valid_mask].cpu().numpy()
+        dst_chunk = topk_indices[valid_mask].cpu().numpy()
+        w_chunk = topk_values[valid_mask].cpu().numpy()
+        
+        # Append to the final lists in mass bulk
+        src_list.extend(src_chunk.tolist())
+        dst_list.extend(dst_chunk.astype(int).tolist())
+        w_list.extend(w_chunk.astype(float).tolist())
 
     return src_list, dst_list, w_list
 
