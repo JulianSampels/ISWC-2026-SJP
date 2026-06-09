@@ -245,11 +245,13 @@ def _build_entity_entity_edges(
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Moving matrix and metadata to device: {device}...")
+    logger.info(f"Moving matrix transpose to device: {device}...")
     
-    A_torch = torch.from_numpy(A.toarray()).to(device)
-    entity_sizes = A_torch.sum(dim=1, keepdim=True)
-    A_T = A_torch.T
+    # Compute row sizes directly from sparse matrix and send to device
+    entity_sizes_gpu = torch.from_numpy(np.array(A.sum(axis=1)).flatten()).to(device).unsqueeze(1)
+    
+    # Store ONLY the transpose matrix on the GPU to conserve VRAM
+    A_T_gpu = torch.from_numpy(A.toarray()).T.to(device)
 
     src_list, dst_list, w_list = [], [], []
 
@@ -259,31 +261,38 @@ def _build_entity_entity_edges(
         end_idx = min(start_idx + chunk_size, num_entities)
         current_chunk_size = end_idx - start_idx
         
-        intersections = torch.mm(A_torch[start_idx:end_idx], A_T)
+        # Slice sparse chunk on CPU, convert to dense, and send a tiny tensor to GPU
+        chunk_gpu = torch.from_numpy(A[start_idx:end_idx].toarray()).to(device)
         
-        # Safety guard: Prevent division by zero for entities with no relations
-        chunk_sizes = entity_sizes[start_idx:end_idx]
-        scores = torch.where(chunk_sizes > 0, intersections / chunk_sizes, 0.0)
+        # Compute intersections 
+        intersections = torch.mm(chunk_gpu, A_T_gpu)
         
-        # Exclude self-loops
+        # Prevent division by zero for entities with no relations using in-place operations
+        chunk_sizes = entity_sizes_gpu[start_idx:end_idx]
+        mask_zero = (chunk_sizes == 0)
+        chunk_sizes_clamped = chunk_sizes.clone()
+        chunk_sizes_clamped[mask_zero] = 1.0
+        
+        intersections /= chunk_sizes_clamped
+        intersections[mask_zero.squeeze(1), :] = 0.0
+        
+        # Exclude self-loops in-place
         global_rows = torch.arange(start_idx, end_idx, device=device)
-        scores[torch.arange(current_chunk_size, device=device), global_rows] = 0.0
-        scores[scores <= 0] = 0.0
+        intersections[torch.arange(current_chunk_size, device=device), global_rows] = 0.0
+        intersections[intersections <= 0] = 0.0
         
         actual_k = min(top_k, num_entities)
-        topk_values, topk_indices = torch.topk(scores, k=actual_k, dim=1, largest=True)
+        topk_values, topk_indices = torch.topk(intersections, k=actual_k, dim=1, largest=True)
         
         # Vectorised generation of source indices
         src_indices = torch.arange(start_idx, end_idx, device=device).unsqueeze(1).expand(-1, actual_k)
         
-        # Filter out trailing zeros (where a row had fewer than top_k matches)
         valid_mask = topk_values > 0
         
         src_chunk = src_indices[valid_mask].cpu().numpy()
         dst_chunk = topk_indices[valid_mask].cpu().numpy()
         w_chunk = topk_values[valid_mask].cpu().numpy()
         
-        # Append to the final lists in mass bulk
         src_list.extend(src_chunk.tolist())
         dst_list.extend(dst_chunk.astype(int).tolist())
         w_list.extend(w_chunk.astype(float).tolist())
