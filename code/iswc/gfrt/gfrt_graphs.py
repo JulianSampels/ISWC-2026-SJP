@@ -217,7 +217,7 @@ def build_tail_relation_graph(
 def _build_entity_entity_edges(
     entity_to_relations: Dict[int, Set[int]],
     top_k: int,
-    chunk_size: int = 1000,
+    chunk_size: int = 200,
 ) -> Tuple[List[int], List[int], List[float]]:
     
     logger.info("Parsing dictionary mappings into sparse matrix layout...")
