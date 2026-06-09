@@ -160,7 +160,7 @@ python -m iswc.harmonized.interface train-ranking-model \
   --adapter reta \
   --reta-code-dir ./RETA_code \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
-  --model-output-dir ./results/reta_models \
+  --model-output-dir ./logs/harmonized/reta_fb15k237 \
   --epochs 1000
 ```
 
@@ -197,7 +197,7 @@ python -m iswc.harmonized.interface rank-candidates \
   --reta-code-dir ./RETA_code \
   --reta-data-dir ./iswc_data/reta/fb15k237 \
   --candidate-file ./results/reta_candidates.csv \
-  --ranking-model-path ./results/reta_models/<model_file> \
+  --ranking-model-path ./logs/harmonized/reta_fb15k237/<model_file> \
   --avg-candidates-per-head 500 \
   --output-file ./results/reta_ranked.csv
 ```
